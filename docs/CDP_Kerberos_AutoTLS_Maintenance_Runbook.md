@@ -217,9 +217,12 @@ chmod +x scripts/kinit_cdp.sh scripts/spark_sql_maintenance.sh
 ```bash
 cp .env.example .env
 # TARGET_DATABASE, TARGET_TABLE 등 실제 값으로 수정
-source scripts/load_env.sh
+
 ./scripts/kinit_cdp.sh
+# interactive shell: source scripts/load_env.sh
 ```
+
+> `./scripts/load_env.sh` 단독 실행은 subshell — `source scripts/load_env.sh` 또는 `./scripts/kinit_cdp.sh` 사용.
 
 ---
 
@@ -639,7 +642,7 @@ EOF
 
 ```bash
 export MAINTENANCE_RUN_ID=$(date -u +%Y%m%d_%H%M%S)
-source scripts/load_env.sh && ./scripts/kinit_cdp.sh
+./scripts/kinit_cdp.sh
 
 ./scripts/capture_metrics.sh step0_baseline
 ./scripts/capture_metrics.sh step1_baseline

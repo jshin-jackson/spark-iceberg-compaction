@@ -15,10 +15,11 @@ Covers the guide execution order with **step-wise metrics capture and comparison
 Shell helpers:
 
 ```bash
-cp .env.example .env   # edit TARGET_* ; keytab: /cdep/keytabs/systest.keytab
+cp .env.example .env
 chmod +x scripts/*.sh
-source scripts/load_env.sh   # bash-safe .env load (do not use bare "source .env")
-./scripts/kinit_cdp.sh
+
+./scripts/kinit_cdp.sh              # .env 자동 로드 + kinit
+# interactive shell: source scripts/load_env.sh
 ./scripts/run_step_with_verify.sh step2_rewrite_data_files run
 ```
 

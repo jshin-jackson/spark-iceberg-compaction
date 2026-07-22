@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 # Bash-safe .env loader (supports quoted values; SPARK_CONF_* must use underscores, not dots).
+#
+# Usage (interactive shell — exports persist):
+#   source scripts/load_env.sh
+#
+# Maintenance scripts (kinit_cdp.sh, spark_sql_maintenance.sh, ...) source this automatically.
+# Do NOT run ./scripts/load_env.sh expecting exports in the parent shell (subshell limitation).
+
+_LOAD_ENV_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_LOAD_ENV_PROJECT_ROOT="$(cd "${_LOAD_ENV_SCRIPT_DIR}/.." && pwd)"
+
 load_env_file() {
-  local env_file="${1:?env file path required}"
+  local env_file="${1:-${_LOAD_ENV_PROJECT_ROOT}/.env}"
   if [[ ! -f "${env_file}" ]]; then
-    return 0
+    echo "WARN: .env not found: ${env_file} (run: cp .env.example .env)" >&2
+    return 1
   fi
   while IFS= read -r line || [[ -n "${line}" ]]; do
     line="${line%%#*}"
@@ -17,8 +28,18 @@ load_env_file() {
   done < "${env_file}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-  load_env_file "${PROJECT_ROOT}/.env"
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  load_env_file "${_LOAD_ENV_PROJECT_ROOT}/.env"
+else
+  cat >&2 <<EOF
+load_env.sh must be sourced to export variables into your current shell:
+
+  cd ${_LOAD_ENV_PROJECT_ROOT}
+  source scripts/load_env.sh
+
+Or run a maintenance script directly (loads .env automatically):
+
+  ./scripts/kinit_cdp.sh
+EOF
+  exit 1
 fi

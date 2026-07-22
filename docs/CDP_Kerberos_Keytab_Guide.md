@@ -30,12 +30,14 @@ SPARK_YARN_KEYTAB=/cdep/keytabs/systest.keytab
 ```bash
 cd ~/spark-iceberg-compaction
 cp .env.example .env   # 실제 DB/테이블명으로 수정
-source scripts/load_env.sh
+
 ./scripts/kinit_cdp.sh
+# 또는 interactive shell: source scripts/load_env.sh && echo "$KERBEROS_KEYTAB"
 klist
 ```
 
-> **`source .env` 대신 `source scripts/load_env.sh` 사용** — 공백·특수문자·`SPARK_CONF_*` 형식을 안전하게 로드합니다.
+> **`source .env` 사용 금지.** `./scripts/kinit_cdp.sh`(자동 .env 로드) 또는 `source scripts/load_env.sh` 사용.  
+> `./scripts/load_env.sh` 단독 실행은 subshell이라 export가 부모 shell에 남지 않습니다.
 
 ---
 
