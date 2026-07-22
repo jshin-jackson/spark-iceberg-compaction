@@ -35,8 +35,15 @@ chmod +x scripts/*.sh
 
 ## Quick start (static validation)
 
+CDP edge node에서는 **`python3`** 를 사용하십시오 (`python -m venv`는 venv 모듈 없음).
+
 ```bash
-python -m venv .venv
+# 권장: setup 스크립트
+chmod +x scripts/setup_venv.sh
+./scripts/setup_venv.sh
+
+# 또는 수동
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
@@ -52,6 +59,9 @@ validate-guide
 # pytest (static only, no network/CDP)
 pytest tests/ -m "not cdp and not network" -v
 ```
+
+> Maintenance shell scripts (`kinit_cdp.sh`, `spark_sql_maintenance.sh`, …)는 **venv 없이** 동작합니다.  
+> Python 도구(`validate-guide`, `pytest`, `capture_metrics.py`)만 venv가 필요합니다.
 
 ## CDP integration tests
 
@@ -91,6 +101,8 @@ Map these in `.env` using the `SPARK_CONF_` prefix (see `.env.example`).
 ### 3. Run integration tests
 
 ```bash
+python3 -m venv .venv   # or: ./scripts/setup_venv.sh
+source .venv/bin/activate
 pip install -e ".[cdp]"
 
 # Safe tiers only (T1–T5: catalog, metadata, dry-run orphan, rewrite_manifests, rewrite_data_files)

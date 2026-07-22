@@ -677,9 +677,12 @@ ls -la metrics/${MAINTENANCE_RUN_ID}/
 
 ## 10. 검증 프로젝트와의 연계
 
-이 저장소의 자동 검증·CDP 통합 테스트:
+이 저장소의 자동 검증·CDP 통합 테스트 (Python 도구 — **`python3`** 사용, `python -m venv` 아님):
 
 ```bash
+./scripts/setup_venv.sh
+source .venv/bin/activate
+
 # 문서 정적 검증
 validate-guide --skip-links
 
@@ -687,7 +690,7 @@ validate-guide --skip-links
 pytest tests/integration/ -m "cdp and not destructive" -v
 ```
 
-`.env.example`에 Kerberos·Auto-TLS 변수가 포함되어 있습니다.
+Maintenance shell 스크립트(`kinit_cdp.sh`, `run_step_with_verify.sh` 등)는 venv 없이 동작합니다.
 
 ---
 
