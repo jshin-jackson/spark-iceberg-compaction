@@ -8,7 +8,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 if [[ -f "${PROJECT_ROOT}/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
-  source "${PROJECT_ROOT}/.env"
+  source "${SCRIPT_DIR}/load_env.sh"
+  load_env_file "${PROJECT_ROOT}/.env"
   set +a
 fi
 

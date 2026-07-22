@@ -8,20 +8,18 @@ This project validates that the HTML guide's SQL/CALL examples, table properties
 
 For step-by-step maintenance execution on a **Kerberos + Auto-TLS** CDP cluster (principal example: `systest@QE-INFRA-AD.CLOUDERA.COM`), see:
 
-**[docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)**
+**[docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)** · **[Keytab guide](docs/CDP_Kerberos_Keytab_Guide.md)** (`/cdep/keytabs/systest.keytab`)
 
 Covers the guide execution order with **step-wise metrics capture and comparison** (pre/post data verification).
 
 Shell helpers:
 
 ```bash
-cp .env.example .env   # set KERBEROS_*, TRUSTSTORE_*, TARGET_*
+cp .env.example .env   # edit TARGET_* ; keytab: /cdep/keytabs/systest.keytab
 chmod +x scripts/*.sh
-
-export MAINTENANCE_RUN_ID=$(date -u +%Y%m%d_%H%M%S)
+source scripts/load_env.sh   # bash-safe .env load (do not use bare "source .env")
 ./scripts/kinit_cdp.sh
-./scripts/capture_metrics.sh step1_baseline
-./scripts/run_step_with_verify.sh step2_rewrite_data_files run   # pre → procedure → post → compare
+./scripts/run_step_with_verify.sh step2_rewrite_data_files run
 ```
 
 ## What gets validated

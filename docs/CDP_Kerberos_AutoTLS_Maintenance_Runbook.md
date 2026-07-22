@@ -136,7 +136,7 @@ maintenance Job을 제출하는 **동일 호스트·동일 OS 사용자**에서 
 ```bash
 # keytab 방식 (장기 Job / 스케줄러 권장)
 export KERBEROS_PRINCIPAL="systest@QE-INFRA-AD.CLOUDERA.COM"
-export KERBEROS_KEYTAB="/path/to/systest.keytab"
+export KERBEROS_KEYTAB="/cdep/keytabs/systest.keytab"
 
 kinit -kt "${KERBEROS_KEYTAB}" "${KERBEROS_PRINCIPAL}"
 
@@ -216,8 +216,8 @@ chmod +x scripts/kinit_cdp.sh scripts/spark_sql_maintenance.sh
 
 ```bash
 cp .env.example .env
-# KERBEROS_PRINCIPAL, KERBEROS_KEYTAB, TRUSTSTORE_*, TARGET_* 값 입력
-source .env
+# TARGET_DATABASE, TARGET_TABLE 등 실제 값으로 수정
+source scripts/load_env.sh
 ./scripts/kinit_cdp.sh
 ```
 
@@ -639,7 +639,7 @@ EOF
 
 ```bash
 export MAINTENANCE_RUN_ID=$(date -u +%Y%m%d_%H%M%S)
-source .env && ./scripts/kinit_cdp.sh
+source scripts/load_env.sh && ./scripts/kinit_cdp.sh
 
 ./scripts/capture_metrics.sh step0_baseline
 ./scripts/capture_metrics.sh step1_baseline
