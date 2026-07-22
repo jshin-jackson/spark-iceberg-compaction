@@ -104,7 +104,8 @@ Map these in `.env` using the `SPARK_CONF_` prefix (see `.env.example`).
 ```bash
 python3 -m venv .venv   # or: ./scripts/setup_venv.sh
 source .venv/bin/activate
-pip install -e ".[cdp]"
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e ".[cdp]"
 
 # Safe tiers only (T1–T5: catalog, metadata, dry-run orphan, rewrite_manifests, rewrite_data_files)
 pytest tests/integration/ -m "cdp and not destructive" -v
