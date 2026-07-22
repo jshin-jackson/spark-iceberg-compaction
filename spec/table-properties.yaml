@@ -1,0 +1,29 @@
+version: "1.5.2"
+source: https://iceberg.apache.org/docs/1.5.2/spark-configuration/
+
+properties:
+  write.target-file-size-bytes:
+    type: string
+    description: Target output file size for new writes and compaction default
+
+  write.metadata.delete-after-commit.enabled:
+    type: string
+    enum: ["true", "false"]
+    description: Enable deletion of old metadata JSON after commit
+    requires_pair: write.metadata.previous-versions-max
+
+  write.metadata.previous-versions-max:
+    type: string
+    description: Max previous metadata versions to retain
+    requires_pair: write.metadata.delete-after-commit.enabled
+
+metadata_pairs:
+  - write.metadata.delete-after-commit.enabled
+  - write.metadata.previous-versions-max
+
+guide_expected_properties:
+  compaction:
+    - write.target-file-size-bytes
+  metadata_retention:
+    - write.metadata.delete-after-commit.enabled
+    - write.metadata.previous-versions-max

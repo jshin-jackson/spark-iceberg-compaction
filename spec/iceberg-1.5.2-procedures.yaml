@@ -1,0 +1,107 @@
+version: "1.5.2"
+source: https://iceberg.apache.org/docs/1.5.2/spark-procedures/
+
+procedures:
+  rewrite_data_files:
+    required_args: [table]
+    optional_args: [strategy, sort_order, options, where]
+    option_keys:
+      - max-concurrent-file-group-rewrites
+      - partial-progress.enabled
+      - partial-progress.max-commits
+      - use-starting-sequence-number
+      - rewrite-job-order
+      - target-file-size-bytes
+      - min-file-size-bytes
+      - max-file-size-bytes
+      - min-input-files
+      - rewrite-all
+      - max-file-group-size-bytes
+      - delete-file-threshold
+      - compression-factor
+      - shuffle-partitions-per-file
+      - var-length-contribution
+      - max-output-size
+    defaults:
+      strategy: binpack
+      partial-progress.enabled: "false"
+      target-file-size-bytes: "536870912"
+      min-input-files: "5"
+      max-concurrent-file-group-rewrites: "5"
+      max-file-group-size-bytes: "107374182400"
+    table_scope: false
+
+  rewrite_position_delete_files:
+    required_args: [table]
+    optional_args: [options]
+    forbidden_args: [where]
+    option_keys:
+      - max-concurrent-file-group-rewrites
+      - partial-progress.enabled
+      - partial-progress.max-commits
+      - rewrite-job-order
+      - target-file-size-bytes
+      - min-file-size-bytes
+      - max-file-size-bytes
+      - min-input-files
+      - rewrite-all
+      - max-file-group-size-bytes
+    defaults:
+      partial-progress.enabled: "false"
+      target-file-size-bytes: "67108864"
+      min-input-files: "5"
+      max-concurrent-file-group-rewrites: "5"
+      max-file-group-size-bytes: "107374182400"
+    table_scope: true
+
+  rewrite_manifests:
+    required_args: [table]
+    optional_args: [use_caching, spec_id]
+    option_keys: []
+    defaults:
+      use_caching: "true"
+    table_scope: true
+
+  expire_snapshots:
+    required_args: [table]
+    optional_args:
+      - older_than
+      - retain_last
+      - max_concurrent_deletes
+      - stream_results
+      - snapshot_ids
+    option_keys: []
+    defaults:
+      retain_last: "1"
+    table_scope: true
+
+  remove_orphan_files:
+    required_args: [table]
+    optional_args:
+      - older_than
+      - location
+      - dry_run
+      - max_concurrent_deletes
+      - file_list_view
+      - equal_schemes
+      - equal_authorities
+      - prefix_mismatch_mode
+    option_keys: []
+    defaults:
+      dry_run: "false"
+    table_scope: true
+
+execution_order:
+  - rewrite_data_files
+  - rewrite_position_delete_files
+  - rewrite_manifests
+  - expire_snapshots
+
+table_scope_procedures:
+  - rewrite_position_delete_files
+  - rewrite_manifests
+  - expire_snapshots
+  - remove_orphan_files
+
+partition_scope_procedures:
+  - rewrite_data_files

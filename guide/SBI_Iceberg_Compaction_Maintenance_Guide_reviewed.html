@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SBI Iceberg Compaction &amp; Maintenance Operational Guide</title>
+  <style>
+    :root{--navy:#092f4a;--blue:#164b78;--orange:#f47920;--ink:#19232d;--line:#d5dce2;--pale:#f5f8fa;--red:#a72e2e}
+    *{box-sizing:border-box} body{margin:0;color:var(--ink);font:15px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans KR",Arial,sans-serif}
+    header{padding:38px max(24px,calc((100vw - 1100px)/2));color:#fff;background:linear-gradient(115deg,var(--navy),var(--blue));border-bottom:5px solid var(--orange)}
+    h1{margin:8px 0 12px;font-size:31px;line-height:1.25} main{max-width:1100px;margin:auto;padding:32px 26px 60px}
+    h2{margin:38px 0 15px;padding-bottom:7px;color:var(--blue);font-size:22px;border-bottom:2px solid #dce7ef}
+    .tag,.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:700;font-size:11px}.tag{background:var(--orange)}.meta{display:flex;flex-wrap:wrap;gap:7px 22px;color:#d9e5ed;font-size:13px}
+    .lead{font-size:17px;color:#344553}.box{margin:18px 0;padding:16px 18px;background:var(--pale);border-left:5px solid var(--blue)}.warning{background:#fff8ee;border-left-color:var(--orange)}.critical{background:#fff2f2;border-left-color:var(--red)}
+    .ok{background:#e9f6ee;color:#176b4d}.high{background:#fbe8e8;color:var(--red)}.med{background:#fff2d9;color:#9c5a00}
+    table{width:100%;margin:13px 0 20px;border-collapse:collapse;font-size:14px}th{text-align:left;color:#fff;background:var(--blue)}th,td{padding:10px 11px;vertical-align:top;border:1px solid var(--line)}tr:nth-child(even) td{background:#fafcfd}
+    pre{overflow-x:auto;padding:15px;color:#e9f1f5;background:#17232d;border-radius:5px;font:12.5px/1.52 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}code{padding:1px 4px;background:#edf2f5;border-radius:3px;font:0.91em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}pre code{padding:0;background:transparent}
+    ul,ol{padding-left:23px}.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 0}.step{padding:7px 10px;color:var(--navy);background:#eaf2f7;border-radius:4px;font-weight:650;font-size:13px}.arrow{color:var(--orange);font-weight:700}
+    footer{margin-top:45px;padding-top:16px;color:#53616d;border-top:1px solid var(--line);font-size:12px}@media print{body{font-size:12px}main{max-width:none;padding:18px}header{padding:22px}table,pre,.box{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<header>
+  <span class="tag">CLOUDERA PROFESSIONAL SERVICES</span>
+  <h1>Iceberg Compaction &amp; Maintenance Operational Guide</h1>
+  <div class="meta"><span>Customer: State Bank of India (SBI)</span><span>CDP Private Cloud Base 7.3.1.600+</span><span>Spark 3.5.4 · Iceberg 1.5.2 · HDFS / Ozone</span></div>
+</header>
+<main>
+  <p class="lead">SBI PROD Iceberg 테이블의 data file, delete file, snapshot, metadata 및 orphan file 유지보수를 위한 운영 가이드입니다. Iceberg 1.5.2 Spark Procedures와 CDP 운영 위험을 기준으로 검토·수정했습니다.</p>
+
+  <div class="box critical"><strong>승인 전 필수 확인(P0)</strong><br>이 문서의 <code>CALL</code> 구문은 Spark 3의 Iceberg SQL extension과 정상적인 Iceberg catalog 설정이 있어야 실행됩니다. production 적용 전 maintenance 전용 Spark Job에서 catalog, extension, Ranger 권한 및 HDFS/Ozone 경로의 read/write/delete 권한을 검증하십시오. 설정이 없으면 모든 procedure가 실패합니다.</div>
+
+  <h2>1. 적용 범위와 공통 운영 원칙</h2>
+  <ul>
+    <li>작업 단위는 <strong>테이블별 단일 maintenance run</strong>입니다. 동일 테이블에서 ETL, <code>MERGE</code>, <code>DELETE</code>, <code>UPDATE</code>, streaming commit과 중첩하지 않습니다.</li>
+    <li><strong>파티션 단위 compaction 정책:</strong> 파티션 테이블에서는 maintenance 대상 파티션에 ingest/write가 진행 중이거나, 해당 파티션을 읽는 배치·조회가 실행 중일 때 <code>rewrite_data_files</code>를 시작하지 않습니다. 대상 파티션의 write 및 read window가 모두 끝난 뒤 실행합니다.</li>
+    <li>Iceberg snapshot isolation상 동시 read 자체가 데이터 정합성을 깨뜨리지는 않지만, 기존 snapshot을 읽는 query와 compaction은 HDFS/Ozone·YARN 자원 경합 및 파일 수명 관리를 복잡하게 만듭니다. 따라서 위 read 비중첩은 <strong>운영 안정성과 예측 가능한 성능을 위한 필수 정책</strong>입니다.</li>
+    <li>서비스 중단은 보통 필요 없지만 maintenance는 대규모 read/shuffle/write와 Iceberg commit을 발생시킵니다. 전용 YARN queue와 executor·memory·동시 실행 상한을 사용합니다.</li>
+    <li>각 작업 전후 metadata table의 files/snapshots/manifests 수, Spark 실행시간, scan task skew 및 query planning 시간을 기록합니다.</li>
+    <li>예시의 <code>spark_catalog</code>과 <code>databases.table</code>은 실제 catalog와 완전 수식 테이블명으로 대체합니다.</li>
+  </ul>
+  <div class="box"><strong>실행 환경 범위:</strong> 본 가이드는 Spark on YARN을 기준으로 작성되며, OpenShift는 Iceberg procedure의 문법이나 HDFS/Ozone 파일 lifecycle의 전제조건이 아닙니다. 만약 maintenance Spark Job을 CDE 또는 Kubernetes executor로 실행한다면, 이 문서의 “YARN queue / executor / memory 상한”은 해당 플랫폼의 virtual cluster quota, pod CPU·memory limit 및 동시 job 제한으로 치환하십시오. 두 실행 모델의 리소스 제어를 혼용하지 않습니다.</div>
+
+  <h2>2. 권장 실행 순서</h2>
+  <div class="flow"><span class="step">사전 점검·table lock</span><span class="arrow">→</span><span class="step">rewrite_data_files</span><span class="arrow">→</span><span class="step">rewrite_position_delete_files (조건부)</span><span class="arrow">→</span><span class="step">rewrite_manifests (조건부)</span><span class="arrow">→</span><span class="step">expire_snapshots</span></div>
+  <div class="box warning"><strong>파티션 가용성 확인:</strong> <code>rewrite_data_files</code> 전에는 대상 파티션의 ingest/write와 read job이 없는지 확인하고 lock을 확보합니다. 파티션별로 순차 실행하며, 서로 다른 파티션도 YARN/Ozone 용량 여유가 검증되기 전에는 병렬 실행하지 않습니다.</div>
+  <div class="box warning"><strong>Orphan file 정리는 위 체인에 강제 편입하지 않습니다.</strong> 실패한 write가 있거나 정기 점검이 필요한 경우에만 별도의 주간 작업으로 실행하며, 매번 <code>dry_run</code> 검토와 승인 단계를 거칩니다.</div>
+
+  <h2>3. 데이터 파일 컴팩션: <code>rewrite_data_files</code></h2>
+  <p><span class="badge ok">적용 가능</span> 512 MB는 HDFS와 Ozone 모두에서 합리적인 시작값입니다. 파일 목표 크기는 HDFS block size와 같은 개념이 아니며, 128 MB 또는 Ozone 5 GB를 고정 표준으로 사용하지 않습니다.</p>
+  <pre><code>CALL spark_catalog.system.rewrite_data_files(
+  table =&gt; 'databases.table',
+  strategy =&gt; 'binpack',
+  where =&gt; 'business_date = DATE ''2026-07-21''',
+  options =&gt; map(
+    'target-file-size-bytes', '536870912',
+    'min-input-files', '5',
+    'max-concurrent-file-group-rewrites', '2',
+    'max-file-group-size-bytes', '21474836480',
+    'partial-progress.enabled', 'false'
+  )
+);</code></pre>
+  <ul>
+    <li><code>where</code>는 대상 파티션을 지정하는 예시입니다. 실제 partition transform과 컬럼 타입에 맞는 predicate로 교체합니다. 이 가이드는 파티션 테이블에서 이 방식의 <strong>partition-at-a-time</strong> 실행을 기본으로 합니다.</li>
+    <li><code>min-input-files=5</code>는 5개 이상 file group을 재작성 대상으로 삼는 하나의 기준입니다. 5개 미만 file group이 항상 제외된다는 뜻은 아닙니다.</li>
+    <li><code>partial-progress.enabled</code>의 기본값은 <code>false</code>입니다. <code>true</code>는 하나의 작업을 여러 commit/snapshot으로 나누므로 snapshot 증가와 외부 write 충돌 가능성을 감수할 때만 사용합니다. “대형 테이블 필수” 옵션이 아닙니다.</li>
+    <li>512 MB는 목표치이지 보장값이 아닙니다. 파티션 경계, Spark task 크기 및 압축률에 따라 실제 파일은 더 작거나 클 수 있습니다.</li>
+  </ul>
+  <pre><code>ALTER TABLE databases.table SET TBLPROPERTIES (
+  'write.target-file-size-bytes' = '536870912'
+);</code></pre>
+  <p>Compaction 옵션만으로는 이후 write의 small-file 생성을 막지 못합니다. 신규 write 정책도 함께 설정하고, Spark write partition/AQE 설정을 별도로 실측 튜닝하십시오.</p>
+
+  <h2>4. Position delete 정리: <code>rewrite_position_delete_files</code></h2>
+  <p><span class="badge med">조건부 적용</span> 이 절차는 equality delete가 아닌 position delete를 재작성하고 dangling delete를 제거합니다. 다음 조건이 모두 해당될 때 <code>rewrite_data_files</code> 직후 같은 maintenance window에서 실행합니다.</p>
+  <ul><li>Iceberg format v2 테이블이며 position delete 파일이 존재한다.</li><li>Spark <code>rewrite_data_files</code>를 수행했다.</li><li>Impala의 stats-optimized plain <code>SELECT count(*)</code> 정확성 위험을 제거해야 한다.</li></ul>
+  <pre><code>CALL spark_catalog.system.rewrite_position_delete_files(
+  table =&gt; 'databases.table',
+  options =&gt; map(
+    'min-input-files', '2',
+    'max-concurrent-file-group-rewrites', '2',
+    'max-file-group-size-bytes', '21474836480'
+  )
+);</code></pre>
+  <div class="box warning"><strong>주의:</strong> 모든 Impala 조회 테이블에 무조건 실행할 작업은 아닙니다. 조건에 맞지 않는 테이블에서 전면 실행하면 불필요한 scan과 commit만 증가합니다.</div>
+  <div class="box warning"><strong>범위 제약:</strong> Iceberg 1.5.2의 <code>rewrite_position_delete_files</code> procedure는 <code>where</code> 인자를 제공하지 않습니다. 따라서 이 절차는 partition-at-a-time 작업으로 가정할 수 없으며 table scope로 계획해야 합니다. 실행 시에는 해당 테이블의 write 및 중요 read window 전체와 겹치지 않게 스케줄하십시오.</div>
+
+  <h2>5. Manifest 재작성: <code>rewrite_manifests</code></h2>
+  <p><span class="badge med">조건부 적용</span> 이 절차는 오래된 metadata JSON을 삭제하는 작업이 아닙니다. manifest 배치를 정리해 planning을 개선하며, 파티션 필터가 빈번하고 manifest 수가 많은 테이블에만 사용합니다.</p>
+  <pre><code>CALL spark_catalog.system.rewrite_manifests(
+  table =&gt; 'databases.table',
+  use_caching =&gt; false
+);</code></pre>
+  <p>대형 manifest 작업에서는 executor 메모리 압박을 피하기 위해 <code>use_caching=false</code>부터 시작합니다. 실행 전후 planning time이 개선되지 않으면 정기 실행 대상에서 제외하십시오.</p>
+  <p><strong>범위:</strong> <code>rewrite_manifests</code>도 table scope입니다. 파티션별 compaction이 끝난 뒤, 필요한 테이블에 대해 별도 maintenance window에서 실행합니다.</p>
+
+  <h2>6. Snapshot 만료: <code>expire_snapshots</code></h2>
+  <p><span class="badge high">업무 보존정책 필요</span> 30일/20개는 시작 예시일 뿐이며, time travel, 감사, 장애 분석 및 rollback 요구사항에 따라 확정해야 합니다.</p>
+  <pre><code>CALL spark_catalog.system.expire_snapshots(
+  table =&gt; 'databases.table',
+  older_than =&gt; TIMESTAMPADD(DAY, -30, CURRENT_TIMESTAMP),
+  retain_last =&gt; 20,
+  max_concurrent_deletes =&gt; 4
+);</code></pre>
+  <p>이 작업은 live snapshot이 참조하는 파일을 삭제하지 않지만, 만료된 snapshot으로 time travel 또는 rollback하는 것은 불가능해집니다. <code>max_concurrent_deletes</code>는 HDFS/Ozone 및 NameNode/OM 부하를 보며 조정합니다.</p>
+  <p><strong>범위:</strong> snapshot 만료는 table scope입니다. 특정 파티션만 대상으로 만료할 수 없으므로 ingestion 및 중요 read window와 분리합니다.</p>
+
+  <h2>7. Metadata JSON 보존</h2>
+  <p><code>expire_snapshots</code>만으로는 이전 metadata JSON lifecycle을 충분히 관리하지 못합니다. 아래 두 속성은 함께 설정해야 하며, 두 번째 속성만 설정해도 자동 삭제는 시작되지 않습니다.</p>
+  <pre><code>ALTER TABLE databases.table SET TBLPROPERTIES (
+  'write.metadata.delete-after-commit.enabled' = 'true',
+  'write.metadata.previous-versions-max' = '100'
+);</code></pre>
+  <div class="box warning"><strong>보존값 주의:</strong> streaming table에서 100 commits는 짧은 시간일 수 있습니다. metadata JSON 보존 수는 commit 빈도와 장애 조사에 필요한 기간을 함께 계산하여 테이블별로 정합니다.</div>
+
+  <h2>8. Orphan 파일 정리: <code>remove_orphan_files</code></h2>
+  <p><span class="badge high">주간·승인형 작업</span> 실패한 Spark 작업, YARN container kill, 네트워크 장애로 남은 미참조 물리 파일을 처리합니다. table location 전체 listing이 크면 HDFS/Ozone 부하가 상당할 수 있습니다.</p>
+  <pre><code>-- 1단계: 삭제 후보 확인
+CALL spark_catalog.system.remove_orphan_files(
+  table =&gt; 'databases.table',
+  older_than =&gt; TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP),
+  dry_run =&gt; true
+);
+
+-- 2단계: 후보 검토·승인 후 실제 삭제
+CALL spark_catalog.system.remove_orphan_files(
+  table =&gt; 'databases.table',
+  older_than =&gt; TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP)
+);</code></pre>
+  <p>보존기간은 가장 오래 걸릴 수 있는 write의 최대 시간보다 길어야 합니다. 7일은 보수적인 시작값이며, 실제 장기 write/재시도 시간을 기준으로 정합니다.</p>
+  <p><strong>범위:</strong> orphan 파일 정리도 table location을 대상으로 하므로 partition-at-a-time 작업이 아닙니다. table-level maintenance window와 승인 절차가 필요합니다.</p>
+
+  <h2>9. 파일 크기 및 스케줄링 기준</h2>
+  <table><tr><th>항목</th><th>운영 기준</th></tr>
+    <tr><td>HDFS / Ozone target file size</td><td>512 MB에서 시작. table별로 256 MB~1 GB를 benchmark하여 확정. Ozone 5 GB를 기본값으로 사용하지 않음.</td></tr>
+    <tr><td>Compaction 주기</td><td>파티션 단위로 순차 실행. 대상 파티션의 ingest/write 및 read가 없는 window만 사용하며, 전체 테이블 full rewrite를 정기 기본값으로 두지 않음.</td></tr>
+    <tr><td>Position delete</td><td>format v2 + position delete + data-file rewrite 조건을 만족하는 테이블만 실행. Iceberg 1.5.2에서는 table scope이므로 table-level window 필요.</td></tr>
+    <tr><td>Snapshot expiry</td><td>일 1회 가능. 업무 보존기간 및 최소 snapshot 수를 명시. table scope이므로 write/중요 read와 분리.</td></tr>
+    <tr><td>Orphan cleanup</td><td>주 1회 또는 실패 이벤트 후. dry-run 검토 및 승인 후 실제 삭제. table scope으로 실행.</td></tr>
+    <tr><td>오케스트레이션</td><td>Airflow, Oozie 또는 조직 표준 scheduler로 table lock, 순서, retry, log, alert를 관리. 특정 container platform은 본 문서의 전제조건이 아님.</td></tr>
+  </table>
+
+  <h2>10. 배포 승인 체크리스트</h2>
+  <ol><li>maintenance Spark Job에서 Iceberg SQL extension, catalog, Ranger 및 storage 권한을 사전 검증했다.</li><li>대상 테이블의 format version, delete 유형, snapshots/files/manifests 규모를 확인했다.</li><li>대상 파티션의 ingest/write 및 read job이 모두 종료된 것을 확인하고 partition lock을 확보했다.</li><li>table-scope procedure(position delete, manifest, snapshot, orphan)의 별도 maintenance window를 확보했다.</li><li>전용 YARN queue의 executor, memory, 동시 실행 상한을 설정했다.</li><li>첫 실행은 대표 파티션에서 시작해 파일 수, scan 성능, planning time, skew, commit 실패율을 측정했다.</li><li>Orphan cleanup은 dry-run 결과를 검토하고 명시적으로 승인받은 뒤 실행한다.</li></ol>
+
+  <h2>11. 공식 문서 Reference</h2>
+  <p>아래 자료는 이 가이드의 버전 전제, procedure 문법, Spark 실행 설정 및 Ozone 운영 판단의 공식 근거입니다. 운영 적용 시에는 설치된 parcel/build와 해당 문서의 버전을 함께 대조하십시오.</p>
+  <table>
+    <tr><th>영역</th><th>공식 문서</th><th>이 가이드에서의 사용처</th></tr>
+    <tr><td>Cloudera Runtime</td><td><a href="https://docs.cloudera.com/runtime/7.3.1/public-release-notes/topics/rt-runtime-component-versions_731600.html">Cloudera Runtime 7.3.1.600 SP3 CHF 1 - Component Versions</a></td><td>Spark 3.5.4 / Iceberg 1.5.2 버전 기준 확인</td></tr>
+    <tr><td>Cloudera + Iceberg</td><td><a href="https://docs.cloudera.com/cdp-private-cloud-base/7.3.1/spark-iceberg/spark-iceberg.pdf">Using Apache Iceberg with Spark</a></td><td>CDP Private Cloud Base에서 Spark catalog, Ranger 정책 및 Iceberg 사용 전제</td></tr>
+    <tr><td>Cloudera + Ozone</td><td><a href="https://docs.cloudera.com/cdp-private-cloud-base/7.3.1/impala-reference/topics/impala-ozone.html">Impala with Ozone</a></td><td>Ozone filesystem protocol과 Ozone의 전역 block-size 특성 확인</td></tr>
+    <tr><td>Cloudera + Ozone</td><td><a href="https://docs.cloudera.com/storage/latest/ozone-performance-tuning/topics/ozone-performance-tuning-for-ozone.html">Performance tuning for Ozone</a></td><td>OM/S3 Gateway 자원 및 Ozone 성능 모니터링·튜닝 참고</td></tr>
+    <tr><td>Apache Spark 3.5.4</td><td><a href="https://spark.apache.org/docs/3.5.4/sql-performance-tuning.html#adaptive-query-execution">Spark SQL Performance Tuning - Adaptive Query Execution</a></td><td>write partition, shuffle 및 AQE 기반 small-file 예방 실측 튜닝</td></tr>
+    <tr><td>Apache Spark 3.5.4</td><td><a href="https://spark.apache.org/docs/3.5.4/configuration.html">Spark Configuration</a></td><td>executor/memory, dynamic allocation, shuffle 및 제출 설정</td></tr>
+    <tr><td>Apache Iceberg 1.5.2</td><td><a href="https://iceberg.apache.org/docs/1.5.2/spark-procedures/">Spark Procedures</a></td><td><code>rewrite_data_files</code>, <code>rewrite_position_delete_files</code>, <code>rewrite_manifests</code>, <code>expire_snapshots</code>, <code>remove_orphan_files</code>의 문법·옵션·제약</td></tr>
+    <tr><td>Apache Iceberg 1.5.2</td><td><a href="https://iceberg.apache.org/docs/1.5.2/spark-configuration/">Spark Configuration</a></td><td><code>spark.sql.extensions</code>, catalog 및 table property 적용 우선순위</td></tr>
+    <tr><td>Apache Iceberg 1.5.2</td><td><a href="https://iceberg.apache.org/docs/1.5.2/maintenance/">Maintenance</a></td><td>snapshot 만료, metadata JSON 보존, orphan file 정리의 lifecycle과 안전 주의사항</td></tr>
+  </table>
+  <footer>Cloudera Professional Services · SBI CDP Implementation Engagement<br>Reviewed baseline: CDP Private Cloud Base 7.3.1.600+ · Spark 3.5.4 · Iceberg 1.5.2</footer>
+</main>
+</body>
+</html>
