@@ -7,6 +7,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 PYTHON="${PYTHON:-python3}"
+VENV_DIR="${VENV_DIR:-.venv}"
 
 if ! command -v "${PYTHON}" >/dev/null 2>&1; then
   echo "ERROR: ${PYTHON} not found" >&2
@@ -19,9 +20,17 @@ if ! "${PYTHON}" -c "import venv" 2>/dev/null; then
 fi
 
 echo "Using: $("${PYTHON}" --version)"
-"${PYTHON}" -m venv .venv
+
+if [[ ! -d "${VENV_DIR}" ]]; then
+  "${PYTHON}" -m venv "${VENV_DIR}"
+fi
+
 # shellcheck disable=SC1091
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -e ".[dev]"
-echo "Done. Activate with: source .venv/bin/activate"
+source "${VENV_DIR}/bin/activate"
+
+# CDP parcel Python often ships pip 21.x — upgrade before pyproject editable install
+python -m pip install --upgrade pip setuptools wheel
+
+python -m pip install -e ".[dev]"
+
+echo "Done. Activate with: source ${VENV_DIR}/bin/activate"

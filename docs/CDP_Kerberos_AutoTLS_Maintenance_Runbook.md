@@ -692,6 +692,14 @@ pytest tests/integration/ -m "cdp and not destructive" -v
 
 Maintenance shell 스크립트(`kinit_cdp.sh`, `run_step_with_verify.sh` 등)는 venv 없이 동작합니다.
 
+**pip editable 설치 실패 시** (`setup.py not found` / old pip 21.x):
+
+```bash
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e ".[dev]"
+```
+
 ---
 
 *Cloudera Professional Services · SBI CDP Implementation · Kerberos + Auto-TLS Runbook*

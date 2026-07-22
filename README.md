@@ -42,10 +42,11 @@ CDP edge node에서는 **`python3`** 를 사용하십시오 (`python -m venv`는
 chmod +x scripts/setup_venv.sh
 ./scripts/setup_venv.sh
 
-# 또는 수동
+# 또는 수동 (CDP edge: pip upgrade 필수)
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e ".[dev]"
 
 # Text report (offline — skips URL checks)
 validate-guide --skip-links
