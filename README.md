@@ -635,6 +635,13 @@ A. HDFS HA 환경에서 클라이언트가 **standby NameNode**에 붙었을 때
 `SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://ns1` 이 있는지 확인하고 `source scripts/load_env.sh` 후
 다시 seed 하세요. `Picked up JAVA_TOOL_OPTIONS` 는 Auto-TLS용으로 **정상**입니다.
 
+**Q. `spark_sql_maintenance.sh`에서 `SparkSQLCLIDriver` / `-Phive-thriftserver` 에러가 나와요.**  
+A. venv의 `.venv/bin/spark-sql`(PySpark shim) 또는 `CDH/lib/spark3` 경로를 쓰면 발생합니다.
+`git pull` 후 스크립트가 **SPARK3 parcel → build/*/spark3** 순으로 CDP `spark3-sql`을 찾습니다.
+그래도 실패하면 `.env`에 lab 경로를 지정하세요:  
+`SPARK_HOME=/var/lib/cloudera-scm-agent/build/7.3.1.600-xxxxx/spark3`  
+(`ls /var/lib/cloudera-scm-agent/build/*/spark3/bin/` 로 확인)
+
 **Q. `python` / `python3` 쓰면 안 되나요?**  
 A. 이 lab에서 `python`은 **2.7**, `python3`는 **3.8** 입니다. 이 프로젝트는
 **`python3.11`(3.11.11)** + `.venv` 기준입니다. `.env`의 `PYTHON=python3.11`을

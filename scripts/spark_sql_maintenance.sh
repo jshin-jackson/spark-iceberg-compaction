@@ -23,24 +23,10 @@ source "${SCRIPT_DIR}/cdp_client_env.sh"
 : "${SPARK_DRIVER_MEMORY:=4g}"
 : "${SPARK_NUM_EXECUTORS:=4}"
 
-# Load Spark environment from CDP parcel if present (cdp_client_env.sh may have set SPARK_HOME)
-if [[ -z "${SPARK_HOME:-}" ]]; then
-for spark_env in /opt/cloudera/parcels/CDH/lib/spark3/bin/spark-env.sh \
-                 /var/lib/cloudera-scm-agent/build/*/spark3/spark3-env.sh; do
-  if [[ -f "${spark_env}" ]]; then
-    # shellcheck disable=SC1090
-    source "${spark_env}"
-    break
-  fi
-done
-fi
-
-SPARK_SQL="${SPARK_HOME:-}/bin/spark-sql"
-if [[ ! -x "${SPARK_SQL}" ]]; then
-  SPARK_SQL="$(command -v spark-sql || true)"
-fi
+SPARK_SQL="$(resolve_spark_sql || true)"
 if [[ -z "${SPARK_SQL}" || ! -x "${SPARK_SQL}" ]]; then
-  echo "ERROR: spark-sql not found. Set SPARK_HOME or run on a CDP gateway node." >&2
+  echo "ERROR: spark-sql not found (CDP parcel/build path with hive-thriftserver required)." >&2
+  echo "Set SPARK_HOME in .env to your lab spark3 path, or run: deactivate  # avoid .venv/bin/spark-sql" >&2
   exit 1
 fi
 
