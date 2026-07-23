@@ -7,12 +7,24 @@
 # Prevents Spark/YARN from hitting a standby NameNode (host:8020) when HDFS HA
 # is configured with nameservice ns1.
 
+# CDP hadoop-env.sh / spark-env.sh reference vars that may be unset; callers
+# (kinit_cdp.sh, spark_sql_maintenance.sh) use set -u.
+_source_vendor_env() {
+  local env_file="$1"
+  local had_nounset=0
+  [[ $- == *u* ]] && had_nounset=1 && set +u
+  # shellcheck disable=SC1090
+  source "${env_file}"
+  if (( had_nounset )); then
+    set -u
+  fi
+}
+
 : "${HADOOP_CONF_DIR:=/etc/hadoop/conf}"
 if [[ -d "${HADOOP_CONF_DIR}" ]]; then
   export HADOOP_CONF_DIR
   if [[ -f "${HADOOP_CONF_DIR}/hadoop-env.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "${HADOOP_CONF_DIR}/hadoop-env.sh"
+    _source_vendor_env "${HADOOP_CONF_DIR}/hadoop-env.sh"
   fi
 fi
 
@@ -27,8 +39,7 @@ if [[ -z "${SPARK_HOME:-}" ]]; then
   for spark_env in /opt/cloudera/parcels/CDH/lib/spark3/bin/spark-env.sh \
                    /var/lib/cloudera-scm-agent/build/*/spark3/spark3-env.sh; do
     if [[ -f "${spark_env}" ]]; then
-      # shellcheck disable=SC1090
-      source "${spark_env}"
+      _source_vendor_env "${spark_env}"
       break
     fi
   done
