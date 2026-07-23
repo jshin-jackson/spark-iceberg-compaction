@@ -1,6 +1,12 @@
 """Unit tests for template renderer."""
 
-from guide_validator.template_renderer import CdpEnv, render_sql, rewrite_data_files_sql
+from guide_validator.template_renderer import (
+    CdpEnv,
+    iceberg_partition_predicate,
+    render_sql,
+    remove_orphan_files_dry_run_sql,
+    rewrite_data_files_sql,
+)
 
 
 def test_render_sql_substitutes_catalog_and_table():
@@ -17,6 +23,15 @@ def test_render_sql_substitutes_catalog_and_table():
     assert "maintenance.test_iceberg" in rendered
 
 
+def test_iceberg_partition_predicate_normalizes_spark_date_syntax():
+    assert iceberg_partition_predicate("business_date = DATE '2026-07-21'") == (
+        "business_date = '2026-07-21'"
+    )
+    assert iceberg_partition_predicate("business_date = '2026-07-21'") == (
+        "business_date = '2026-07-21'"
+    )
+
+
 def test_rewrite_data_files_template_includes_partition_filter():
     env = CdpEnv(
         catalog="spark_catalog",
@@ -30,7 +45,7 @@ def test_rewrite_data_files_template_includes_partition_filter():
     assert "db.tbl" in sql
 
 
-def test_rewrite_data_files_escapes_quotes_in_partition_filter():
+def test_rewrite_data_files_normalizes_and_escapes_date_partition_filter():
     env = CdpEnv(
         catalog="spark_catalog",
         database="db",
@@ -39,13 +54,12 @@ def test_rewrite_data_files_escapes_quotes_in_partition_filter():
         allow_destructive=False,
     )
     sql = rewrite_data_files_sql(env)
-    assert "where => 'business_date = DATE ''2026-07-21'''" in sql
+    assert "where => 'business_date = ''2026-07-21'''" in sql
+    assert "DATE" not in sql
     assert "'''2026" not in sql
 
 
-def test_remove_orphan_files_uses_interval_not_timestampadd():
-    from guide_validator.template_renderer import remove_orphan_files_dry_run_sql
-
+def test_remove_orphan_files_uses_timestamp_literal():
     env = CdpEnv(
         catalog="spark_catalog",
         database="db",
@@ -54,5 +68,7 @@ def test_remove_orphan_files_uses_interval_not_timestampadd():
         allow_destructive=False,
     )
     sql = remove_orphan_files_dry_run_sql(env)
-    assert "interval 7 days" in sql
+    assert "timestamp '2000-01-01 00:00:00'" in sql
     assert "TIMESTAMPADD" not in sql
+    assert "interval" not in sql
+    assert "current_timestamp()" not in sql

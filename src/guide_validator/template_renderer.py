@@ -23,7 +23,7 @@ class CdpEnv:
         partition_filter = (
             os.environ.get("TEST_PARTITION_FILTER")
             or os.environ.get("PARTITION_FILTER")
-            or "business_date = DATE '2026-07-21'"
+            or "business_date = '2026-07-21'"
         )
         allow_destructive = os.environ.get("CDP_ALLOW_DESTRUCTIVE", "false").lower() == "true"
         return cls(
@@ -49,11 +49,24 @@ def _sql_string_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
+def iceberg_partition_predicate(partition_filter: str) -> str:
+    """Normalize Spark-style DATE literals for Iceberg procedure ``where`` parsers."""
+    match = re.match(
+        r"(\w+)\s*=\s*DATE\s+'(\d{4}-\d{2}-\d{2})'",
+        partition_filter.strip(),
+        re.IGNORECASE,
+    )
+    if match:
+        return f"{match.group(1)} = '{match.group(2)}'"
+    return partition_filter
+
+
 def render_sql(sql: str, env: CdpEnv) -> str:
     rendered = sql
     rendered = rendered.replace("spark_catalog", env.catalog)
     rendered = rendered.replace("databases.table", env.full_table)
-    escaped_filter = _sql_string_literal(env.partition_filter)
+    predicate = iceberg_partition_predicate(env.partition_filter)
+    escaped_filter = _sql_string_literal(predicate)
     rendered = re.sub(
         r"where\s*=>\s*'(?:[^']|'')*'",
         f"where => '{escaped_filter}'",
@@ -69,7 +82,7 @@ def rewrite_data_files_sql(env: CdpEnv) -> str:
         CALL spark_catalog.system.rewrite_data_files(
           table => 'databases.table',
           strategy => 'binpack',
-          where => 'business_date = DATE ''2026-07-21''',
+          where => 'business_date = ''2026-07-21''',
           options => map(
             'target-file-size-bytes', '536870912',
             'min-input-files', '5',
@@ -100,7 +113,7 @@ def remove_orphan_files_dry_run_sql(env: CdpEnv) -> str:
         """
         CALL spark_catalog.system.remove_orphan_files(
           table => 'databases.table',
-          older_than => current_timestamp() - interval 7 days,
+          older_than => timestamp '2000-01-01 00:00:00',
           dry_run => true
         )
         """.strip(),
@@ -113,7 +126,7 @@ def expire_snapshots_sql(env: CdpEnv) -> str:
         """
         CALL spark_catalog.system.expire_snapshots(
           table => 'databases.table',
-          older_than => current_timestamp() - interval 30 days,
+          older_than => timestamp '2000-01-01 00:00:00',
           retain_last => 20,
           max_concurrent_deletes => 4
         )

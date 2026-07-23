@@ -28,10 +28,10 @@ FULL_TABLE="${TARGET_DATABASE}.${TARGET_TABLE}"
 
 # Guide defaults (sec. 6 & 8). Override in .env to reproduce on freshly-seeded tables,
 # e.g. EXPIRE_OLDER_THAN="CURRENT_TIMESTAMP" EXPIRE_RETAIN_LAST=1 ORPHAN_OLDER_THAN="CURRENT_TIMESTAMP"
-: "${EXPIRE_OLDER_THAN:=current_timestamp() - interval 30 days}"
+: "${EXPIRE_OLDER_THAN:=timestamp '2000-01-01 00:00:00'}"
 : "${EXPIRE_RETAIN_LAST:=20}"
 : "${EXPIRE_MAX_CONCURRENT_DELETES:=4}"
-: "${ORPHAN_OLDER_THAN:=current_timestamp() - interval 7 days}"
+: "${ORPHAN_OLDER_THAN:=timestamp '2000-01-01 00:00:00'}"
 
 METRICS_DIR="${METRICS_DIR:-${PROJECT_ROOT}/metrics/${MAINTENANCE_RUN_ID}}"
 PRE_FILE="${METRICS_DIR}/${STEP}_pre.csv"

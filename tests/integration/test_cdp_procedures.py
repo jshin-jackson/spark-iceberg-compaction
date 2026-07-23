@@ -21,12 +21,15 @@ def test_t1_spark_session_active(spark):
 
 
 def test_t2_show_tables_and_describe(spark, cdp_env: CdpEnv):
-    spark.sql(f"USE {cdp_env.database}")
-    tables = spark.sql("SHOW TABLES").collect()
+    tables = spark.sql(
+        f"SHOW TABLES IN {cdp_env.catalog}.{cdp_env.database}"
+    ).collect()
     table_names = {row.tableName for row in tables}
     assert cdp_env.table in table_names
 
-    describe = spark.sql(f"DESCRIBE EXTENDED {cdp_env.full_table}").collect()
+    describe = spark.sql(
+        f"DESCRIBE TABLE EXTENDED {cdp_env.catalog}.{cdp_env.full_table}"
+    ).collect()
     assert len(describe) > 0
 
 
