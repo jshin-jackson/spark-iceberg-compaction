@@ -26,6 +26,13 @@ fi
 : "${PARTITION_FILTER:=${TEST_PARTITION_FILTER:-}}"
 FULL_TABLE="${TARGET_DATABASE}.${TARGET_TABLE}"
 
+# Guide defaults (sec. 6 & 8). Override in .env to reproduce on freshly-seeded tables,
+# e.g. EXPIRE_OLDER_THAN="CURRENT_TIMESTAMP" EXPIRE_RETAIN_LAST=1 ORPHAN_OLDER_THAN="CURRENT_TIMESTAMP"
+: "${EXPIRE_OLDER_THAN:=TIMESTAMPADD(DAY, -30, CURRENT_TIMESTAMP)}"
+: "${EXPIRE_RETAIN_LAST:=20}"
+: "${EXPIRE_MAX_CONCURRENT_DELETES:=4}"
+: "${ORPHAN_OLDER_THAN:=TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP)}"
+
 METRICS_DIR="${METRICS_DIR:-${PROJECT_ROOT}/metrics/${MAINTENANCE_RUN_ID}}"
 PRE_FILE="${METRICS_DIR}/${STEP}_pre.csv"
 POST_FILE="${METRICS_DIR}/${STEP}_post.csv"
@@ -82,9 +89,9 @@ EOF
       "${SCRIPT_DIR}/spark_sql_maintenance.sh" <<EOF
 CALL ${ICEBERG_CATALOG}.system.expire_snapshots(
   table => '${FULL_TABLE}',
-  older_than => TIMESTAMPADD(DAY, -30, CURRENT_TIMESTAMP),
-  retain_last => 20,
-  max_concurrent_deletes => 4
+  older_than => ${EXPIRE_OLDER_THAN},
+  retain_last => ${EXPIRE_RETAIN_LAST},
+  max_concurrent_deletes => ${EXPIRE_MAX_CONCURRENT_DELETES}
 );
 EOF
       ;;
@@ -92,7 +99,7 @@ EOF
       "${SCRIPT_DIR}/spark_sql_maintenance.sh" <<EOF
 CALL ${ICEBERG_CATALOG}.system.remove_orphan_files(
   table => '${FULL_TABLE}',
-  older_than => TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP),
+  older_than => ${ORPHAN_OLDER_THAN},
   dry_run => true
 );
 EOF
@@ -101,7 +108,7 @@ EOF
       "${SCRIPT_DIR}/spark_sql_maintenance.sh" <<EOF
 CALL ${ICEBERG_CATALOG}.system.remove_orphan_files(
   table => '${FULL_TABLE}',
-  older_than => TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP)
+  older_than => ${ORPHAN_OLDER_THAN}
 );
 EOF
       ;;

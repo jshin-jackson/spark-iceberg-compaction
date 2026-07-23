@@ -125,6 +125,56 @@ pytest tests/integration/ -m cdp -v
 | T5 | `rewrite_data_files` with partition `where` | Medium |
 | T6 | `expire_snapshots`, `rewrite_position_delete_files` | Destructive (opt-in) |
 
+## Reproducible test scenario (seed data)
+
+The guide's procedures only do something when the table is in the "bad" state each
+one fixes. `scripts/seed_iceberg_table.py` builds a format-v2, merge-on-read,
+`business_date`-partitioned table (`iceberg_compaction_test.txn_events`) and
+deliberately creates those states with plain Spark (no external dependency):
+
+| Guide section | Reproduced by |
+|---------------|---------------|
+| §3 `rewrite_data_files` | many small files in one partition (N small append commits) |
+| §4 `rewrite_position_delete_files` | position deletes via `DELETE`/`UPDATE` (merge-on-read) |
+| §5 `rewrite_manifests` | manifests accumulated from many commits |
+| §6 `expire_snapshots` | many snapshots (see override note below) |
+| §8 `remove_orphan_files` | `scripts/inject_orphan_files.py` writes unreferenced parquet |
+
+```bash
+source scripts/load_env.sh      # loads .env (TARGET_/TEST_ = iceberg_compaction_test.txn_events)
+./scripts/kinit_cdp.sh
+
+# 1) create + seed (20 small batches by default) and make position deletes
+python scripts/seed_iceberg_table.py --recreate
+
+# 2) (optional) inject orphan files aged 10 days so guide's -7d catches them
+python scripts/inject_orphan_files.py --count 3 --age-days 10
+
+# 3) run each step with pre/post verification
+./scripts/run_step_with_verify.sh step2_rewrite_data_files run
+./scripts/run_step_with_verify.sh step3_rewrite_position_delete_files run
+./scripts/run_step_with_verify.sh step4_rewrite_manifests run
+./scripts/run_step_with_verify.sh step6_metadata_properties run
+./scripts/run_step_with_verify.sh step5_expire_snapshots run
+./scripts/run_step_with_verify.sh step7_orphan_dry_run run
+./scripts/run_step_with_verify.sh step7_orphan_delete run   # after approving dry-run
+```
+
+> **Same-day reproduction caveat.** The guide's real values (`expire_snapshots`
+> `older_than => -30d, retain_last => 20`; `remove_orphan_files older_than => -7d`)
+> will **not** expire freshly-seeded snapshots or catch brand-new orphans. To see
+> those two steps actually change something on a just-seeded table, set the test
+> overrides in `.env` and restore the guide values for real operations:
+>
+> ```bash
+> EXPIRE_OLDER_THAN="CURRENT_TIMESTAMP"
+> EXPIRE_RETAIN_LAST=1
+> ORPHAN_OLDER_THAN="CURRENT_TIMESTAMP"
+> ```
+>
+> `inject_orphan_files.py` backdates file mtime (default 10 days), so orphan
+> cleanup works with the guide's real `-7d` value without any override.
+
 ## Updating the guide
 
 1. Replace `guide/SBI_Iceberg_Compaction_Maintenance_Guide_reviewed.html`
@@ -138,6 +188,9 @@ guide/                          # HTML guide under validation
 spec/                           # Iceberg 1.5.2 procedure & property specs
 src/guide_validator/            # Parsers, validators, CDP helpers
 scripts/validate_guide.py       # CLI wrapper
+scripts/seed_iceberg_table.py   # Create + seed test table (reproduce compaction states)
+scripts/inject_orphan_files.py  # Write unreferenced files for remove_orphan_files
+scripts/run_step_with_verify.sh # Per-step procedure + pre/post metrics compare
 tests/unit/                     # Unit tests
 tests/integration/              # CDP Spark integration tests
 ```
