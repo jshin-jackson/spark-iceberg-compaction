@@ -24,10 +24,18 @@ def split_statements(sql: str) -> list[str]:
     return statements
 
 
+def result_row_limit(sql: str) -> int:
+    """PySpark show() defaults to 20 rows; DESCRIBE/SHOW often need more."""
+    normalized = " ".join(sql.strip().upper().split())
+    if normalized.startswith(("DESCRIBE", "DESC ", "SHOW ", "EXPLAIN")):
+        return 1000
+    return 20
+
+
 def run_statement(spark, sql: str) -> None:
     df = spark.sql(sql)
     if df.columns:
-        df.show(truncate=False)
+        df.show(result_row_limit(sql), truncate=False)
 
 
 def main(argv: list[str] | None = None) -> int:
