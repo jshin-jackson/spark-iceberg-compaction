@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Run spark-sql on CDP with Kerberos, Auto-TLS, and Iceberg settings from environment.
+# Falls back to PySpark (scripts/spark_sql_maintenance.py) when CDP spark-sql CLI
+# is missing or lacks hive-thriftserver — same path as seed/pytest.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,12 +24,38 @@ source "${SCRIPT_DIR}/cdp_client_env.sh"
 : "${SPARK_EXECUTOR_MEMORY:=8g}"
 : "${SPARK_DRIVER_MEMORY:=4g}"
 : "${SPARK_NUM_EXECUTORS:=4}"
+: "${PYTHON:=python3.11}"
+: "${SPARK_SQL_BACKEND:=auto}"
 
-SPARK_SQL="$(resolve_spark_sql || true)"
+_resolve_python() {
+  if [[ -x "${PROJECT_ROOT}/.venv/bin/python" ]]; then
+    echo "${PROJECT_ROOT}/.venv/bin/python"
+  elif command -v "${PYTHON}" >/dev/null 2>&1; then
+    command -v "${PYTHON}"
+  else
+    echo "${PYTHON}"
+  fi
+}
+
+_run_pyspark_sql() {
+  local py
+  py="$(_resolve_python)"
+  if [[ "${SPARK_SQL_BACKEND}" != "pyspark" && "${SPARK_SQL_BACKEND}" != "auto" ]]; then
+    echo "ERROR: spark-sql CLI not found and SPARK_SQL_BACKEND=${SPARK_SQL_BACKEND}" >&2
+    exit 1
+  fi
+  echo "NOTE: using PySpark SQL runner (same settings as seed/pytest)." >&2
+  exec env PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}" \
+    "${py}" "${SCRIPT_DIR}/spark_sql_maintenance.py" "$@"
+}
+
+SPARK_SQL=""
+if [[ "${SPARK_SQL_BACKEND}" != "pyspark" ]]; then
+  SPARK_SQL="$(resolve_spark_sql || true)"
+fi
+
 if [[ -z "${SPARK_SQL}" || ! -x "${SPARK_SQL}" ]]; then
-  echo "ERROR: spark-sql not found (CDP parcel/build path with hive-thriftserver required)." >&2
-  echo "Set SPARK_HOME in .env to your lab spark3 path, or run: deactivate  # avoid .venv/bin/spark-sql" >&2
-  exit 1
+  _run_pyspark_sql "$@"
 fi
 
 # Auto-TLS truststore for JVM (driver + client connections to HMS/HDFS/YARN)

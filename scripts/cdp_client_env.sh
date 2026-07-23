@@ -21,16 +21,22 @@ _source_vendor_env() {
 }
 
 _cdp_spark_env_candidates() {
-  local spark_env
-  for spark_env in \
-    /opt/cloudera/parcels/SPARK3/lib/spark3/bin/spark-env.sh \
-    /var/lib/cloudera-scm-agent/build/*/spark3/spark3-env.sh \
-    /opt/cloudera/parcels/CDH/lib/spark3/bin/spark-env.sh
-  do
+  local spark_env home
+  # Non-CDH parcels first (SPARK3, etc.)
+  for home in /opt/cloudera/parcels/*/lib/spark3; do
+    [[ -d "${home}" ]] || continue
+    [[ "${home}" == *"/CDH/"* ]] && continue
+    spark_env="${home}/bin/spark-env.sh"
     if [[ -f "${spark_env}" ]]; then
       echo "${spark_env}"
     fi
   done
+  for spark_env in /var/lib/cloudera-scm-agent/build/*/spark3/spark3-env.sh; do
+    [[ -f "${spark_env}" ]] && echo "${spark_env}"
+  done
+  if [[ -f /opt/cloudera/parcels/CDH/lib/spark3/bin/spark-env.sh ]]; then
+    echo /opt/cloudera/parcels/CDH/lib/spark3/bin/spark-env.sh
+  fi
 }
 
 # spark-sql CLI needs hive-thriftserver jars; CDH/lib/spark3 alone is often incomplete.
@@ -88,10 +94,21 @@ resolve_spark_sql() {
   fi
 
   for home in \
-    /opt/cloudera/parcels/SPARK3/lib/spark3 \
+    /opt/cloudera/parcels/*/lib/spark3 \
     /var/lib/cloudera-scm-agent/build/*/spark3 \
     /opt/cloudera/parcels/CDH/lib/spark3
   do
+    [[ -d "${home}" ]] || continue
+    [[ "${home}" == *"/CDH/"* ]] && continue
+    for candidate in "${home}/bin/spark3-sql" "${home}/bin/spark-sql"; do
+      if [[ -x "${candidate}" ]] && _cdp_spark_home_has_hive_cli "${home}"; then
+        export SPARK_HOME="${home}"
+        echo "${candidate}"
+        return 0
+      fi
+    done
+  done
+  for home in /opt/cloudera/parcels/CDH/lib/spark3; do
     [[ -d "${home}" ]] || continue
     for candidate in "${home}/bin/spark3-sql" "${home}/bin/spark-sql"; do
       if [[ -x "${candidate}" ]] && _cdp_spark_home_has_hive_cli "${home}"; then

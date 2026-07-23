@@ -256,7 +256,8 @@ python -m pip install -e ".[dev]"
 python --version    # Python 3.11.11 확인
 ```
 
-> `kinit_cdp.sh`, `spark_sql_maintenance.sh` — venv **없이** 동작 (Java/Spark만).  
+> `kinit_cdp.sh` — venv **없이** 동작 (Kerberos만).  
+> `spark_sql_maintenance.sh` — CDP `spark-sql` 없으면 **PySpark fallback** (venv 권장).  
 > `seed`, `pytest`, `validate-guide` — venv **켠 뒤** `python` 사용 (3.11).  
 > venv 없이 Python만 쓸 때는 **`python3.11`** 을 직접 지정하세요.
 
@@ -635,12 +636,11 @@ A. HDFS HA 환경에서 클라이언트가 **standby NameNode**에 붙었을 때
 `SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://ns1` 이 있는지 확인하고 `source scripts/load_env.sh` 후
 다시 seed 하세요. `Picked up JAVA_TOOL_OPTIONS` 는 Auto-TLS용으로 **정상**입니다.
 
-**Q. `spark_sql_maintenance.sh`에서 `SparkSQLCLIDriver` / `-Phive-thriftserver` 에러가 나와요.**  
-A. venv의 `.venv/bin/spark-sql`(PySpark shim) 또는 `CDH/lib/spark3` 경로를 쓰면 발생합니다.
-`git pull` 후 스크립트가 **SPARK3 parcel → build/*/spark3** 순으로 CDP `spark3-sql`을 찾습니다.
-그래도 실패하면 `.env`에 lab 경로를 지정하세요:  
-`SPARK_HOME=/var/lib/cloudera-scm-agent/build/7.3.1.600-xxxxx/spark3`  
-(`ls /var/lib/cloudera-scm-agent/build/*/spark3/bin/` 로 확인)
+**Q. `spark_sql_maintenance.sh`에서 `SparkSQLCLIDriver` / `spark-sql not found` 에러가 나와요.**  
+A. 이 lab처럼 CDP `spark-sql` CLI가 없거나 `CDH/lib/spark3`만 있는 경우, 스크립트가
+**PySpark fallback**(`spark_sql_maintenance.py`, seed와 동일 설정)으로 자동 전환합니다.
+`NOTE: using PySpark SQL runner` 가 stderr에 나오면 정상입니다.  
+CLI를 강제하려면 `.env`에 `SPARK_HOME=...` 지정, PySpark만 쓰려면 `SPARK_SQL_BACKEND=pyspark`.
 
 **Q. `python` / `python3` 쓰면 안 되나요?**  
 A. 이 lab에서 `python`은 **2.7**, `python3`는 **3.8** 입니다. 이 프로젝트는
