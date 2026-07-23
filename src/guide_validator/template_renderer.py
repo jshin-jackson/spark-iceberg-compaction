@@ -18,11 +18,12 @@ class CdpEnv:
     @classmethod
     def from_env(cls) -> CdpEnv:
         catalog = os.environ.get("ICEBERG_CATALOG", "spark_catalog")
-        database = os.environ.get("TEST_DATABASE", "")
-        table = os.environ.get("TEST_TABLE", "")
-        partition_filter = os.environ.get(
-            "TEST_PARTITION_FILTER",
-            "business_date = DATE '2026-07-21'",
+        database = os.environ.get("TEST_DATABASE") or os.environ.get("TARGET_DATABASE", "")
+        table = os.environ.get("TEST_TABLE") or os.environ.get("TARGET_TABLE", "")
+        partition_filter = (
+            os.environ.get("TEST_PARTITION_FILTER")
+            or os.environ.get("PARTITION_FILTER")
+            or "business_date = DATE '2026-07-21'"
         )
         allow_destructive = os.environ.get("CDP_ALLOW_DESTRUCTIVE", "false").lower() == "true"
         return cls(
@@ -43,13 +44,19 @@ class CdpEnv:
         return bool(self.database and self.table)
 
 
+def _sql_string_literal(value: str) -> str:
+    """Escape single quotes for embedding in a SQL single-quoted string."""
+    return value.replace("'", "''")
+
+
 def render_sql(sql: str, env: CdpEnv) -> str:
     rendered = sql
     rendered = rendered.replace("spark_catalog", env.catalog)
     rendered = rendered.replace("databases.table", env.full_table)
+    escaped_filter = _sql_string_literal(env.partition_filter)
     rendered = re.sub(
-        r"where\s*=>\s*'[^']*'",
-        f"where => '{env.partition_filter}'",
+        r"where\s*=>\s*'(?:[^']|'')*'",
+        f"where => '{escaped_filter}'",
         rendered,
         flags=re.IGNORECASE,
     )
@@ -93,7 +100,7 @@ def remove_orphan_files_dry_run_sql(env: CdpEnv) -> str:
         """
         CALL spark_catalog.system.remove_orphan_files(
           table => 'databases.table',
-          older_than => TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP),
+          older_than => current_timestamp() - interval 7 days,
           dry_run => true
         )
         """.strip(),
@@ -106,7 +113,7 @@ def expire_snapshots_sql(env: CdpEnv) -> str:
         """
         CALL spark_catalog.system.expire_snapshots(
           table => 'databases.table',
-          older_than => TIMESTAMPADD(DAY, -30, CURRENT_TIMESTAMP),
+          older_than => current_timestamp() - interval 30 days,
           retain_last => 20,
           max_concurrent_deletes => 4
         )
