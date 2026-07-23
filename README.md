@@ -4,6 +4,8 @@
 > 돌아가는지 확인하는 프로젝트입니다.  
 > CDP Private Cloud Base 7.3.1.600+ · Spark 3.5.4 · Iceberg 1.5.2
 
+**바로 시작:** [5. 기본 가이드 — 처음부터 끝까지](#5-기본-가이드--처음부터-끝까지-권장) (seed → pytest)
+
 ---
 
 ## 1. 이게 뭔가요?
@@ -101,9 +103,97 @@ spark-iceberg-compaction/
 
 ---
 
-## 5. 처음 시작하기
+## 5. 기본 가이드 — 처음부터 끝까지 (권장)
 
-### 5-1. 설정 파일 만들기
+**이 프로젝트의 기본 사용법**은 아래 순서입니다.
+
+매번 **같은 “정리 전” 상태**에서 시험·데모를 하려면, **pytest 전에 seed로 테이블을
+새로 만드는 것**이 필수입니다.  
+**pytest만 실행하면 데이터가 자동으로 생기지 않습니다.**
+
+### 한 번에 실행 (복사용)
+
+```bash
+cd ~/spark-iceberg-compaction
+
+# ── 최초 1회 ──
+cp .env.example .env
+chmod +x scripts/*.sh
+./scripts/setup_venv.sh          # 또는 수동 venv + pip install -e ".[dev]"
+
+# ── 매번 (처음부터 다시 할 때) ──
+source scripts/load_env.sh
+./scripts/kinit_cdp.sh
+source .venv/bin/activate
+
+# ★ 핵심: 테이블 삭제 후 새 데이터 생성 (“정리 전” 상태)
+python scripts/seed_iceberg_table.py --recreate
+
+# (선택) 고아 파일 시연 — T3 dry-run에서 후보가 보이게
+python scripts/inject_orphan_files.py --count 3 --age-days 10
+
+# 자동 시험 (T1~T5)
+pytest tests/integration/ -m "cdp and not destructive" -v
+```
+
+**6 passed**면 CDP에서 안전한 정리 작업(T1~T5)이 잘 동작한다는 뜻입니다.
+
+### 각 단계가 하는 일
+
+| 순서 | 명령 | 하는 일 |
+|------|------|---------|
+| 1 | `kinit_cdp.sh` | Kerberos 로그인 (클러스터 출입) |
+| 2 | `seed --recreate` | 테이블 **삭제 후** 작은 파일 ~20개 등 **정리가 필요한 상태** 만들기 |
+| 3 | `inject_orphan_files` (선택) | orphan dry-run(T3) 데모용 파일 주입 |
+| 4 | `pytest` | T1~T5 자동 검증 (**T4·T5는 테이블을 실제로 변경**) |
+
+### seed 직후 기대값 (참고)
+
+| 항목 | 대략 |
+|------|------|
+| logical rows | ~120,000 |
+| snapshots | ~23 |
+| DATA files (7/21 파티션) | ~20 |
+| position delete files | ~2 |
+
+### 다시 처음부터 하고 싶을 때
+
+pytest를 **한 번 돌린 뒤**에는 T4(manifest)·T5(compaction) 때문에 테이블이 이미
+바뀌어 있습니다. **전/후 데모를 다시** 하려면 seed부터 다시 하세요.
+
+```bash
+python scripts/seed_iceberg_table.py --recreate
+pytest tests/integration/ -m "cdp and not destructive" -v
+```
+
+### T6까지 포함 (선택)
+
+`.env`에 `CDP_ALLOW_DESTRUCTIVE=true` 설정 후:
+
+```bash
+pytest tests/integration/ -m cdp -v
+```
+
+> seed 직후 **당일** expire 효과를 보려면 `.env.example`의 `EXPIRE_OLDER_THAN`,
+> `ORPHAN_OLDER_THAN` override를 참고하세요. 가이드 기본값(30일·7일)은 방금 seed한
+> snapshot/orphan에는 거의 적용되지 않습니다.
+
+### pytest만으로 안 되는 것
+
+| 내용 | 방법 |
+|------|------|
+| 데이터·“정리 전” 상태 만들기 | `seed --recreate` (**기본 가이드 필수**) |
+| orphan **실제 삭제** | `run_step_with_verify.sh step7_orphan_delete` |
+| metadata TBLPROPERTIES | `run_step_with_verify.sh step6_metadata_properties` |
+| 전/후 지표 CSV 비교 | `capture_metrics.sh` + `compare_metrics.sh` |
+
+운영 runbook 전체: [docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)
+
+---
+
+## 6. 처음 설정 (최초 1회)
+
+### 6-1. 설정 파일 만들기
 
 ```bash
 cd ~/spark-iceberg-compaction
@@ -111,14 +201,14 @@ cp .env.example .env
 # 필요하면 .env 내용 수정
 ```
 
-### 5-2. 로그인 (Kerberos)
+### 6-2. 로그인 (Kerberos)
 
 ```bash
 chmod +x scripts/*.sh
 ./scripts/kinit_cdp.sh
 ```
 
-### 5-3. Python 가상환경 (자동 시험·검사 도구용)
+### 6-3. Python 가상환경 (자동 시험·검사 도구용)
 
 CDP edge node에서는 **`python3`** 를 씁니다.
 
@@ -134,41 +224,36 @@ python -m pip install -e ".[dev]"
 > `kinit_cdp.sh`, `spark_sql_maintenance.sh` 같은 **쉘 스크립트**는 venv 없이도 됩니다.  
 > `validate-guide`, `pytest`만 venv가 필요합니다.
 
-### 5-4. 연습용 테이블 만들기 (seed)
+### 6-4. seed 상세
 
-**시험 전에 꼭 해 주세요.** “정리가 필요한 상태”를 일부러 만듭니다.
+**[5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장)** 의 `seed --recreate` 와 동일합니다.
+시험·데모 전에는 **항상** 이 단계부터 시작하세요.
 
 ```bash
-source scripts/load_env.sh
-./scripts/kinit_cdp.sh
 python scripts/seed_iceberg_table.py --recreate
+# 옵션: --batches 30 --rows-per-batch 20000
 ```
 
-seed가 만드는 것:
-
-- 작은 파일 **약 20개** (한 파티션) → T5 compaction 연습
-- DELETE/UPDATE → position delete 파일 → T6 연습
-- snapshot·manifest 많음 → T4, T6 연습
-
-끝나면 화면에 **snapshots, files 개수** 요약이 나옵니다.
+끝나면 터미널에 snapshots·files 개수 **요약**이 출력됩니다.
 
 ---
 
-## 6. 자동 시험 (pytest) — T1부터 T6까지
+## 7. 자동 시험 (pytest) — T1부터 T6까지
+
+> **먼저 [5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장)** 의 `seed --recreate` 를
+> 실행한 뒤 pytest를 돌리세요. pytest는 데이터를 만들지 않습니다.
 
 ### 시험 돌리기
 
 ```bash
 source .venv/bin/activate
 
-# 안전한 시험만 (T1~T5) — 추천
+# 안전한 시험만 (T1~T5)
 pytest tests/integration/ -m "cdp and not destructive" -v
 
 # 위험한 시험까지 (T6) — .env에 CDP_ALLOW_DESTRUCTIVE=true 필요
 pytest tests/integration/ -m cdp -v
 ```
-
-**6개 통과**면: CDP에서 **안전한 정리 작업**이 잘 돌아간다는 뜻입니다.
 
 ### 각 시험이 뭘 확인하나요?
 
@@ -189,10 +274,10 @@ pytest tests/integration/ -m cdp -v
 
 ---
 
-## 7. 직접 눈으로 확인하기
+## 8. 직접 눈으로 확인하기
 
-아래 명령은 **복사해서 edge node에 붙여 넣으면** 됩니다.  
-새 스크립트는 만들지 않아도 됩니다.
+아래는 **[5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장)** 의 `seed --recreate` 직후,
+또는 pytest **전**에 “정리 전” 상태를 확인할 때 쓰면 좋습니다.
 
 ### 공통 준비
 
@@ -458,7 +543,7 @@ CALL spark_catalog.system.rewrite_position_delete_files(
 
 ---
 
-## 8. 설명서만 검사하기 (클러스터 없이)
+## 9. 설명서만 검사하기 (클러스터 없이)
 
 HTML 가이드 문법·링크가 맞는지 **오프라인**으로 확인:
 
@@ -469,7 +554,7 @@ pytest tests/ -m "not cdp and not network" -v
 
 ---
 
-## 9. 운영할 때 — 더 자세한 글
+## 10. 운영할 때 — 더 자세한 글
 
 Kerberos + Auto-TLS 환경에서 **한 단계씩** 정리하고 전/후를 비교하려면:
 
@@ -493,7 +578,7 @@ export MAINTENANCE_RUN_ID=demo_$(date +%Y%m%d_%H%M)
 
 ---
 
-## 10. 정리 순서 (가이드와 같음)
+## 11. 정리 순서 (가이드와 같음)
 
 ```
 사전 점검
@@ -506,7 +591,11 @@ export MAINTENANCE_RUN_ID=demo_$(date +%Y%m%d_%H%M)
 
 ---
 
-## 11. 자주 묻는 질문
+## 12. 자주 묻는 질문
+
+**Q. 테스트만 돌리면 데이터가 새로 생기나요?**  
+A. **아니요.** `python scripts/seed_iceberg_table.py --recreate` 가 “처음부터”의
+**기본**입니다. [5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장) 순서를 따르세요.
 
 **Q. pytest 6개 passed면 PROD에 바로 적용해도 되나요?**  
 A. **연습 테이블에서 검증 완료**라는 뜻입니다. PROD는 승인, 권한(Ranger), YARN queue,
@@ -526,6 +615,6 @@ A. `guide/SBI_Iceberg_Compaction_Maintenance_Guide_reviewed.html` 교체 후
 
 ---
 
-## 12. 라이선스
+## 13. 라이선스
 
 Cloudera Professional Services — SBI CDP engagement 내부 도구.
