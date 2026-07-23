@@ -23,7 +23,7 @@ class CdpEnv:
         partition_filter = (
             os.environ.get("TEST_PARTITION_FILTER")
             or os.environ.get("PARTITION_FILTER")
-            or "business_date = '2026-07-21'"
+            or "business_date = DATE '2026-07-21'"
         )
         allow_destructive = os.environ.get("CDP_ALLOW_DESTRUCTIVE", "false").lower() == "true"
         return cls(
@@ -50,15 +50,31 @@ def _sql_string_literal(value: str) -> str:
 
 
 def iceberg_partition_predicate(partition_filter: str) -> str:
-    """Normalize Spark-style DATE literals for Iceberg procedure ``where`` parsers."""
-    match = re.match(
+    """Normalize partition filters for Spark ``rewrite_data_files`` ``where`` args.
+
+    Iceberg 1.5.x resolves ``where`` via Spark's expression parser, so DATE columns
+    need Spark ``DATE 'YYYY-MM-DD'`` syntax (not bare quoted strings).
+    """
+    stripped = partition_filter.strip()
+    date_match = re.match(
         r"(\w+)\s*=\s*DATE\s+'(\d{4}-\d{2}-\d{2})'",
-        partition_filter.strip(),
+        stripped,
         re.IGNORECASE,
     )
-    if match:
-        return f"{match.group(1)} = '{match.group(2)}'"
-    return partition_filter
+    if date_match:
+        return stripped
+    string_date_match = re.match(
+        r"(\w+)\s*=\s*'(\d{4}-\d{2}-\d{2})'",
+        stripped,
+    )
+    if string_date_match:
+        return f"{string_date_match.group(1)} = DATE '{string_date_match.group(2)}'"
+    return stripped
+
+
+def call_procedure_where(partition_filter: str) -> str:
+    """Escaped ``where => '...'`` literal for Spark CALL procedures."""
+    return _sql_string_literal(iceberg_partition_predicate(partition_filter))
 
 
 def render_sql(sql: str, env: CdpEnv) -> str:
@@ -82,7 +98,7 @@ def rewrite_data_files_sql(env: CdpEnv) -> str:
         CALL spark_catalog.system.rewrite_data_files(
           table => 'databases.table',
           strategy => 'binpack',
-          where => 'business_date = ''2026-07-21''',
+          where => 'business_date = DATE ''2026-07-21''',
           options => map(
             'target-file-size-bytes', '536870912',
             'min-input-files', '5',

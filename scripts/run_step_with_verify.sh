@@ -47,14 +47,19 @@ compare() {
   "${SCRIPT_DIR}/compare_metrics.sh" "$1" "$2" "${STEP}" --format text
 }
 
+rewrite_data_files_where() {
+  python3 -c 'from guide_validator.template_renderer import call_procedure_where; import os; print(call_procedure_where(os.environ.get("PARTITION_FILTER", "")))'
+}
+
 run_procedure() {
   case "${STEP}" in
     step2_rewrite_data_files)
+      PARTITION_WHERE="$(rewrite_data_files_where)"
       "${SCRIPT_DIR}/spark_sql_maintenance.sh" <<EOF
 CALL ${ICEBERG_CATALOG}.system.rewrite_data_files(
   table => '${FULL_TABLE}',
   strategy => 'binpack',
-  where => '${PARTITION_FILTER}',
+  where => '${PARTITION_WHERE}',
   options => map(
     'target-file-size-bytes', '536870912',
     'min-input-files', '5',

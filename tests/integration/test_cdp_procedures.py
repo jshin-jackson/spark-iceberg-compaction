@@ -21,9 +21,8 @@ def test_t1_spark_session_active(spark):
 
 
 def test_t2_show_tables_and_describe(spark, cdp_env: CdpEnv):
-    tables = spark.sql(
-        f"SHOW TABLES IN {cdp_env.catalog}.{cdp_env.database}"
-    ).collect()
+    spark.sql(f"USE {cdp_env.catalog}")
+    tables = spark.sql(f"SHOW TABLES IN {cdp_env.database}").collect()
     table_names = {row.tableName for row in tables}
     assert cdp_env.table in table_names
 

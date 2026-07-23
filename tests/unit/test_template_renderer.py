@@ -2,6 +2,7 @@
 
 from guide_validator.template_renderer import (
     CdpEnv,
+    call_procedure_where,
     iceberg_partition_predicate,
     render_sql,
     remove_orphan_files_dry_run_sql,
@@ -23,12 +24,12 @@ def test_render_sql_substitutes_catalog_and_table():
     assert "maintenance.test_iceberg" in rendered
 
 
-def test_iceberg_partition_predicate_normalizes_spark_date_syntax():
+def test_iceberg_partition_predicate_normalizes_to_spark_date_syntax():
     assert iceberg_partition_predicate("business_date = DATE '2026-07-21'") == (
-        "business_date = '2026-07-21'"
+        "business_date = DATE '2026-07-21'"
     )
     assert iceberg_partition_predicate("business_date = '2026-07-21'") == (
-        "business_date = '2026-07-21'"
+        "business_date = DATE '2026-07-21'"
     )
 
 
@@ -54,9 +55,29 @@ def test_rewrite_data_files_normalizes_and_escapes_date_partition_filter():
         allow_destructive=False,
     )
     sql = rewrite_data_files_sql(env)
-    assert "where => 'business_date = ''2026-07-21'''" in sql
-    assert "DATE" not in sql
+    assert "where => 'business_date = DATE ''2026-07-21'''" in sql
     assert "'''2026" not in sql
+
+
+def test_rewrite_data_files_normalizes_quoted_string_date_partition_filter():
+    env = CdpEnv(
+        catalog="spark_catalog",
+        database="db",
+        table="tbl",
+        partition_filter="business_date = '2026-07-21'",
+        allow_destructive=False,
+    )
+    sql = rewrite_data_files_sql(env)
+    assert "where => 'business_date = DATE ''2026-07-21'''" in sql
+
+
+def test_call_procedure_where_escapes_for_sql_literal():
+    assert call_procedure_where("business_date = DATE '2026-07-21'") == (
+        "business_date = DATE ''2026-07-21''"
+    )
+    assert call_procedure_where("business_date = '2026-07-21'") == (
+        "business_date = DATE ''2026-07-21''"
+    )
 
 
 def test_remove_orphan_files_uses_timestamp_literal():
