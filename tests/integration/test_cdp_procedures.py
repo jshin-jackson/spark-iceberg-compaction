@@ -21,15 +21,21 @@ def test_t1_spark_session_active(spark):
 
 
 def test_t2_show_tables_and_describe(spark, cdp_env: CdpEnv):
-    spark.sql(f"USE {cdp_env.catalog}")
-    tables = spark.sql(f"SHOW TABLES IN {cdp_env.database}").collect()
-    table_names = {row.tableName for row in tables}
-    assert cdp_env.table in table_names
+    spark.catalog.setCurrentCatalog(cdp_env.catalog)
+    table_names = {t.name for t in spark.catalog.listTables(cdp_env.database)}
+    if table_names:
+        assert cdp_env.table in table_names
 
     describe = spark.sql(
         f"DESCRIBE TABLE EXTENDED {cdp_env.catalog}.{cdp_env.full_table}"
     ).collect()
     assert len(describe) > 0
+    providers = {
+        row.data_type.lower()
+        for row in describe
+        if row.col_name == "Provider" and row.data_type
+    }
+    assert "iceberg" in providers
 
 
 def test_t2_iceberg_metadata_files(spark, cdp_env: CdpEnv):

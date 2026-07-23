@@ -24,12 +24,15 @@ def test_render_sql_substitutes_catalog_and_table():
     assert "maintenance.test_iceberg" in rendered
 
 
-def test_iceberg_partition_predicate_normalizes_to_spark_date_syntax():
+def test_iceberg_partition_predicate_normalizes_to_make_date():
     assert iceberg_partition_predicate("business_date = DATE '2026-07-21'") == (
-        "business_date = DATE '2026-07-21'"
+        "business_date = make_date(2026, 7, 21)"
     )
     assert iceberg_partition_predicate("business_date = '2026-07-21'") == (
-        "business_date = DATE '2026-07-21'"
+        "business_date = make_date(2026, 7, 21)"
+    )
+    assert iceberg_partition_predicate("business_date = make_date(2026, 7, 21)") == (
+        "business_date = make_date(2026, 7, 21)"
     )
 
 
@@ -55,8 +58,7 @@ def test_rewrite_data_files_normalizes_and_escapes_date_partition_filter():
         allow_destructive=False,
     )
     sql = rewrite_data_files_sql(env)
-    assert "where => 'business_date = DATE ''2026-07-21'''" in sql
-    assert "'''2026" not in sql
+    assert "where => 'business_date = make_date(2026, 7, 21)'" in sql
 
 
 def test_rewrite_data_files_normalizes_quoted_string_date_partition_filter():
@@ -68,15 +70,15 @@ def test_rewrite_data_files_normalizes_quoted_string_date_partition_filter():
         allow_destructive=False,
     )
     sql = rewrite_data_files_sql(env)
-    assert "where => 'business_date = DATE ''2026-07-21'''" in sql
+    assert "where => 'business_date = make_date(2026, 7, 21)'" in sql
 
 
 def test_call_procedure_where_escapes_for_sql_literal():
     assert call_procedure_where("business_date = DATE '2026-07-21'") == (
-        "business_date = DATE ''2026-07-21''"
+        "business_date = make_date(2026, 7, 21)"
     )
     assert call_procedure_where("business_date = '2026-07-21'") == (
-        "business_date = DATE ''2026-07-21''"
+        "business_date = make_date(2026, 7, 21)"
     )
 
 

@@ -23,7 +23,7 @@ class CdpEnv:
         partition_filter = (
             os.environ.get("TEST_PARTITION_FILTER")
             or os.environ.get("PARTITION_FILTER")
-            or "business_date = DATE '2026-07-21'"
+            or "business_date = make_date(2026, 7, 21)"
         )
         allow_destructive = os.environ.get("CDP_ALLOW_DESTRUCTIVE", "false").lower() == "true"
         return cls(
@@ -49,26 +49,30 @@ def _sql_string_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
+_DATE_EQUALITY = re.compile(
+    r"(\w+)\s*=\s*(?:DATE\s+)?'(\d{4})-(\d{2})-(\d{2})'",
+    re.IGNORECASE,
+)
+_MAKE_DATE_EQUALITY = re.compile(
+    r"(\w+)\s*=\s*make_date\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
+    re.IGNORECASE,
+)
+
+
 def iceberg_partition_predicate(partition_filter: str) -> str:
     """Normalize partition filters for Spark ``rewrite_data_files`` ``where`` args.
 
-    Iceberg 1.5.x resolves ``where`` via Spark's expression parser, so DATE columns
-    need Spark ``DATE 'YYYY-MM-DD'`` syntax (not bare quoted strings).
+    Iceberg 1.5.x resolves ``where`` via Spark's expression parser. Some CDP builds
+    also strip single quotes from CALL string args, so date equality uses
+    ``make_date(year, month, day)`` (no quoted literals).
     """
     stripped = partition_filter.strip()
-    date_match = re.match(
-        r"(\w+)\s*=\s*DATE\s+'(\d{4}-\d{2}-\d{2})'",
-        stripped,
-        re.IGNORECASE,
-    )
-    if date_match:
+    if _MAKE_DATE_EQUALITY.match(stripped):
         return stripped
-    string_date_match = re.match(
-        r"(\w+)\s*=\s*'(\d{4}-\d{2}-\d{2})'",
-        stripped,
-    )
-    if string_date_match:
-        return f"{string_date_match.group(1)} = DATE '{string_date_match.group(2)}'"
+    date_match = _DATE_EQUALITY.match(stripped)
+    if date_match:
+        column, year, month, day = date_match.groups()
+        return f"{column} = make_date({year}, {int(month)}, {int(day)})"
     return stripped
 
 
@@ -98,7 +102,7 @@ def rewrite_data_files_sql(env: CdpEnv) -> str:
         CALL spark_catalog.system.rewrite_data_files(
           table => 'databases.table',
           strategy => 'binpack',
-          where => 'business_date = DATE ''2026-07-21''',
+          where => 'business_date = make_date(2026, 7, 21)',
           options => map(
             'target-file-size-bytes', '536870912',
             'min-input-files', '5',
