@@ -190,7 +190,8 @@ export PARTITION_FILTER="business_date = DATE '2026-07-21'"
 
 # ── YARN / Spark 리소스 (maintenance 전용 queue 권장) ──
 export SPARK_MASTER="yarn"
-export SPARK_QUEUE="maintenance"          # 실제 YARN queue 이름
+export SPARK_QUEUE="default"              # 테스트: default. 운영: 전용 maintenance queue (YARN에 생성 후)
+# export SPARK_QUEUE="maintenance"
 export SPARK_EXECUTOR_MEMORY="8g"
 export SPARK_DRIVER_MEMORY="4g"
 export SPARK_NUM_EXECUTORS="4"
