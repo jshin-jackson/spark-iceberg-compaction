@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.execute:
-        statements = [args.execute]
+        statements = split_statements(args.execute)
     elif args.file:
         statements = split_statements(Path(args.file).read_text(encoding="utf-8"))
     else:
