@@ -20,10 +20,11 @@ import os
 import sys
 import uuid
 
-from guide_validator.cdp_spark import build_spark_session
+from guide_validator.cdp_spark import build_spark_session, load_cdp_env
 
 
 def resolve_target() -> str:
+    load_cdp_env()
     database = os.environ.get("TARGET_DATABASE") or os.environ.get("TEST_DATABASE", "")
     table = os.environ.get("TARGET_TABLE") or os.environ.get("TEST_TABLE", "")
     if not database or not table:

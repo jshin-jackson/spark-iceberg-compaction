@@ -25,12 +25,13 @@ import os
 import re
 import sys
 
-from guide_validator.cdp_spark import build_spark_session
+from guide_validator.cdp_spark import build_spark_session, load_cdp_env
 
 DEFAULT_BUSINESS_DATE = "2026-07-21"
 
 
 def resolve_target() -> tuple[str, str, str]:
+    load_cdp_env()
     catalog = os.environ.get("ICEBERG_CATALOG", "spark_catalog")
     database = os.environ.get("TARGET_DATABASE") or os.environ.get("TEST_DATABASE", "")
     table = os.environ.get("TARGET_TABLE") or os.environ.get("TEST_TABLE", "")
