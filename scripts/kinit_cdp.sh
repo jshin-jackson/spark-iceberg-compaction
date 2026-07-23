@@ -9,6 +9,8 @@ if [[ -f "${PROJECT_ROOT}/.env" ]]; then
   # shellcheck disable=SC1091
   source "${SCRIPT_DIR}/load_env.sh"
 fi
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/cdp_client_env.sh"
 
 : "${KERBEROS_PRINCIPAL:=systest@QE-INFRA-AD.CLOUDERA.COM}"
 

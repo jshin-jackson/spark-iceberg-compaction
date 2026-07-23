@@ -60,6 +60,24 @@ def apply_autotls_java_opts() -> None:
         os.environ["JAVA_TOOL_OPTIONS"] = f"{existing} {opts}".strip()
 
 
+def apply_hadoop_client_env() -> None:
+    """Point JVM Hadoop clients at CDP config dir (HDFS HA nameservice failover)."""
+    load_cdp_env()
+    hadoop_conf = os.environ.get("HADOOP_CONF_DIR", "/etc/hadoop/conf")
+    if os.path.isdir(hadoop_conf):
+        os.environ.setdefault("HADOOP_CONF_DIR", hadoop_conf)
+
+
+def hdfs_spark_defaults() -> dict[str, str]:
+    """Default FS via nameservice so YARN staging avoids standby NameNode host:8020."""
+    load_cdp_env()
+    default_fs = os.environ.get("HDFS_DEFAULT_FS")
+    if not default_fs:
+        nameservice = os.environ.get("HDFS_NAMESERVICE", "ns1")
+        default_fs = f"hdfs://{nameservice}"
+    return {"spark.hadoop.fs.defaultFS": default_fs}
+
+
 def spark_configs_from_env() -> dict[str, str]:
     load_cdp_env()
     configs: dict[str, str] = {}
@@ -94,6 +112,7 @@ def build_spark_session() -> Any:
     load_cdp_env()
     ensure_kerberos_ticket()
     apply_autotls_java_opts()
+    apply_hadoop_client_env()
 
     master = os.environ.get("CDP_SPARK_MASTER", "local[*]")
     builder = SparkSession.builder.master(master).appName("guide-validator-cdp")
@@ -102,7 +121,11 @@ def build_spark_session() -> Any:
     if queue:
         builder = builder.config("spark.yarn.queue", queue)
 
-    all_configs = {**kerberos_spark_configs(), **spark_configs_from_env()}
+    all_configs = {
+        **hdfs_spark_defaults(),
+        **kerberos_spark_configs(),
+        **spark_configs_from_env(),
+    }
     for key, value in all_configs.items():
         builder = builder.config(key, value)
 

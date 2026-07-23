@@ -12,6 +12,9 @@ if [[ -f "${PROJECT_ROOT}/.env" ]]; then
   set +a
 fi
 
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/cdp_client_env.sh"
+
 : "${KERBEROS_PRINCIPAL:=systest@QE-INFRA-AD.CLOUDERA.COM}"
 : "${SPARK_MASTER:=yarn}"
 : "${ICEBERG_CATALOG:=spark_catalog}"
@@ -20,7 +23,8 @@ fi
 : "${SPARK_DRIVER_MEMORY:=4g}"
 : "${SPARK_NUM_EXECUTORS:=4}"
 
-# Load Spark environment from CDP parcel if present
+# Load Spark environment from CDP parcel if present (cdp_client_env.sh may have set SPARK_HOME)
+if [[ -z "${SPARK_HOME:-}" ]]; then
 for spark_env in /opt/cloudera/parcels/CDH/lib/spark3/bin/spark-env.sh \
                  /var/lib/cloudera-scm-agent/build/*/spark3/spark3-env.sh; do
   if [[ -f "${spark_env}" ]]; then
@@ -29,6 +33,7 @@ for spark_env in /opt/cloudera/parcels/CDH/lib/spark3/bin/spark-env.sh \
     break
   fi
 done
+fi
 
 SPARK_SQL="${SPARK_HOME:-}/bin/spark-sql"
 if [[ ! -x "${SPARK_SQL}" ]]; then

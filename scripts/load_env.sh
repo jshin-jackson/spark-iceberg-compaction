@@ -30,6 +30,10 @@ load_env_file() {
 
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   load_env_file "${_LOAD_ENV_PROJECT_ROOT}/.env"
+  if [[ -f "${_LOAD_ENV_SCRIPT_DIR}/cdp_client_env.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "${_LOAD_ENV_SCRIPT_DIR}/cdp_client_env.sh"
+  fi
 else
   cat >&2 <<EOF
 load_env.sh must be sourced to export variables into your current shell:

@@ -69,6 +69,12 @@ Iceberg를 **은행 거래 장부**라고 생각해 보세요.
 | HDFS | NameService **`ns1`** | `hdfs://ns1/...` |
 | Ozone | Service ID **`ozone1784520717`** | `ofs://ozone1784520717/...` |
 
+**HDFS HA (standby NameNode 경고)**  
+Spark/YARN이 `host:8020` standby NameNode에 붙으면 `Operation category READ is not supported in state standby` 가
+나올 수 있습니다. `.env`에 `HADOOP_CONF_DIR`, `HDFS_NAMESERVICE=ns1`, `spark.hadoop.fs.defaultFS=hdfs://ns1` 이
+설정되어 있고, `source scripts/load_env.sh` 또는 `kinit_cdp.sh` 가 `cdp_client_env.sh` 를 불러옵니다.
+Python(seed·pytest)은 `cdp_spark.py` 가 같은 설정을 Spark 세션에 넣습니다.
+
 **연습용 테이블** (`.env` 기본값)
 
 | 항목 | 값 |
@@ -119,6 +125,7 @@ spark-iceberg-compaction/
 | 파일 | 하는 일 |
 |------|---------|
 | `scripts/kinit_cdp.sh` | Kerberos 로그인 (출입증) |
+| `scripts/cdp_client_env.sh` | HDFS HA nameservice·Hadoop conf (load_env/kinit에서 자동) |
 | `scripts/seed_iceberg_table.py` | 연습용 “지저분한” 테이블 만들기 |
 | `scripts/spark_sql_maintenance.sh` | Spark SQL 실행 (설정 자동) |
 | `scripts/run_step_with_verify.sh` | 정리 + 전/후 비교 |
@@ -621,6 +628,12 @@ export MAINTENANCE_RUN_ID=demo_$(date +%Y%m%d_%H%M)
 ---
 
 ## 12. 자주 묻는 질문
+
+**Q. seed 할 때 `standby` / `8020` / `READ is not supported` 경고가 나와요.**  
+A. HDFS HA 환경에서 클라이언트가 **standby NameNode**에 붙었을 때 나는 메시지입니다.
+`.env`에 `HADOOP_CONF_DIR=/etc/hadoop/conf`, `HDFS_NAMESERVICE=ns1`,
+`SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://ns1` 이 있는지 확인하고 `source scripts/load_env.sh` 후
+다시 seed 하세요. `Picked up JAVA_TOOL_OPTIONS` 는 Auto-TLS용으로 **정상**입니다.
 
 **Q. `python` / `python3` 쓰면 안 되나요?**  
 A. 이 lab에서 `python`은 **2.7**, `python3`는 **3.8** 입니다. 이 프로젝트는
