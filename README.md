@@ -1,149 +1,200 @@
-# SBI Iceberg Compaction Guide Validator
+# Iceberg 테이블 정리 가이드 — 쉬운 설명서
 
-Validation project for the **SBI Iceberg Compaction & Maintenance Operational Guide** (CDP Private Cloud Base 7.3.1.600+, Spark 3.5.4, Iceberg 1.5.2).
+> **SBI(SBI 은행)용 Iceberg 유지보수 가이드**가 맞는지, CDP 클러스터에서 실제로
+> 돌아가는지 확인하는 프로젝트입니다.  
+> CDP Private Cloud Base 7.3.1.600+ · Spark 3.5.4 · Iceberg 1.5.2
 
-This project validates that the HTML guide's SQL/CALL examples, table properties, operational policies, and reference links are consistent with **Apache Iceberg 1.5.2** Spark Procedures documentation. Optional integration tests run the same procedures against a CDP Spark cluster.
+---
 
-## Customer runbook (Kerberos + Auto-TLS)
+## 1. 이게 뭔가요?
 
-For step-by-step maintenance execution on a **Kerberos + Auto-TLS** CDP cluster (principal example: `systest@QE-INFRA-AD.CLOUDERA.COM`), see:
+### 한 줄 요약
 
-**[docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)** · **[Keytab guide](docs/CDP_Kerberos_Keytab_Guide.md)** (`/cdep/keytabs/systest.keytab`)
+**“은행 거래 장부(Iceberg 테이블)를 깔끔하게 정리하는 방법”** 이 적혀 있는
+**설명서(HTML 가이드)** 가 맞는지, **연습용 테이블**에서 **자동으로 시험**해 보는
+프로젝트입니다.
 
-Covers the guide execution order with **step-wise metrics capture and comparison** (pre/post data verification).
+### 왜 필요한가요?
 
-Shell helpers:
+데이터를 계속 넣으면 파일이 **작은 조각**으로 많이 쌓입니다.  
+마치 **책 한 권을 100장짜리 종이 1000장**으로 나눠 보관하는 것과 비슷합니다.
 
-```bash
-cp .env.example .env
-chmod +x scripts/*.sh
+이렇게 되면:
 
-./scripts/kinit_cdp.sh              # .env 자동 로드 + kinit
-# interactive shell: source scripts/load_env.sh
-./scripts/run_step_with_verify.sh step2_rewrite_data_files run
+- 찾기가 느려지고
+- 정리(유지보수)가 필요해집니다
+
+이 프로젝트는 **정리 방법 설명서**와 **실제 정리 명령**이 맞게 동작하는지
+확인합니다.
+
+---
+
+## 2. Iceberg — 아주 쉽게
+
+Iceberg를 **은행 거래 장부**라고 생각해 보세요.
+
+| 말 | 쉬운 뜻 | 컴퓨터 안에서는 |
+|----|---------|----------------|
+| **테이블** | 거래 장부 한 권 | `iceberg_compaction_test.txn_events` |
+| **데이터 파일** | 거래 내역이 적힌 종이 묶음 | HDFS/Ozone의 `.parquet` 파일 |
+| **파티션** | 날짜별 서랍 (예: 7월 21일) | `business_date=2026-07-21` 폴더 |
+| **스냅샷** | “그때 장부 상태” 사진 | commit 할 때마다 하나씩 생김 |
+| **매니페스트** | “어떤 종이가 어느 서랍에 있는지” 목록 | `metadata/` 안의 파일 |
+| **정리(compaction)** | 작은 종이 묶음 → 큰 묶음으로 합치기 | `rewrite_data_files` |
+
+### 테이블 폴더는 이렇게 생겼어요
+
+```
+{테이블 위치}/
+├── metadata/     ← 장부의 “목차·버전 기록” (Iceberg 두뇌)
+└── data/
+    └── business_date=2026-07-21/
+        └── *.parquet   ← 실제 거래 데이터
 ```
 
-## What gets validated
+**두 가지로 볼 수 있어요**
 
-| Layer | Checks |
-|-------|--------|
-| **Procedures** | `rewrite_data_files`, `rewrite_position_delete_files`, `rewrite_manifests`, `expire_snapshots`, `remove_orphan_files` — args, options, forbidden `where` on table-scope procedures |
-| **Properties** | `write.target-file-size-bytes`, metadata JSON retention pair |
-| **Policy** | Execution order, version baseline, checklist, partition vs table scope |
-| **Links** | §11 reference URLs (optional, requires network) |
-| **CDP integration** | Tiered procedure execution on a dedicated test table |
+- **Spark SQL** → Iceberg가 **지금 쓰는** 파일 목록 (`.files` 등)
+- **hdfs 명령** → 디스크에 **실제로 있는** 모든 파일  
+  (정리 직후에는 옛날 파일이 잠깐 남을 수도 있어요)
 
-## Quick start (static validation)
+---
 
-CDP edge node에서는 **`python3`** 를 사용하십시오 (`python -m venv`는 venv 모듈 없음).
+## 3. 우리 lab 정보 (기억해 두세요)
+
+| 저장소 | 이름 | 주소 예시 |
+|--------|------|-----------|
+| HDFS | NameService **`ns1`** | `hdfs://ns1/...` |
+| Ozone | Service ID **`ozone1784520717`** | `ofs://ozone1784520717/...` |
+
+**연습용 테이블** (`.env` 기본값)
+
+| 항목 | 값 |
+|------|-----|
+| 카탈로그 | `spark_catalog` |
+| 데이터베이스 | `iceberg_compaction_test` |
+| 테이블 | `txn_events` |
+| 전체 이름 | `iceberg_compaction_test.txn_events` |
+| 연습 파티션 | `2026-07-21` (business_date) |
+
+---
+
+## 4. 프로젝트 폴더 — 뭐가 어디 있나요?
+
+```
+spark-iceberg-compaction/
+├── guide/              ← 고객용 HTML 설명서 (정리 방법)
+├── spec/               ← Iceberg 1.5.2 공식 규칙 (기준)
+├── scripts/            ← 실행 도구 (로그인, 데이터 만들기, 정리 실행)
+├── src/guide_validator/← 검사·SQL 만드는 Python 코드
+├── tests/integration/  ← CDP에서 도는 자동 시험 (T1~T6)
+└── docs/               ← Kerberos·운영 runbook (더 자세한 글)
+```
+
+| 파일 | 하는 일 |
+|------|---------|
+| `scripts/kinit_cdp.sh` | Kerberos 로그인 (출입증) |
+| `scripts/seed_iceberg_table.py` | 연습용 “지저분한” 테이블 만들기 |
+| `scripts/spark_sql_maintenance.sh` | Spark SQL 실행 (설정 자동) |
+| `scripts/run_step_with_verify.sh` | 정리 + 전/후 비교 |
+| `tests/integration/test_cdp_procedures.py` | 자동 시험 문제지 |
+
+---
+
+## 5. 처음 시작하기
+
+### 5-1. 설정 파일 만들기
 
 ```bash
-# 권장: setup 스크립트
-chmod +x scripts/setup_venv.sh
-./scripts/setup_venv.sh
+cd ~/spark-iceberg-compaction
+cp .env.example .env
+# 필요하면 .env 내용 수정
+```
 
-# 또는 수동 (CDP edge: pip upgrade 필수)
+### 5-2. 로그인 (Kerberos)
+
+```bash
+chmod +x scripts/*.sh
+./scripts/kinit_cdp.sh
+```
+
+### 5-3. Python 가상환경 (자동 시험·검사 도구용)
+
+CDP edge node에서는 **`python3`** 를 씁니다.
+
+```bash
+./scripts/setup_venv.sh
+# 또는
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
-
-# Text report (offline — skips URL checks)
-validate-guide --skip-links
-
-# JSON report
-validate-guide --skip-links --format json
-
-# Include reference URL checks
-validate-guide
-
-# pytest (static only, no network/CDP)
-pytest tests/ -m "not cdp and not network" -v
 ```
 
-> Maintenance shell scripts (`kinit_cdp.sh`, `spark_sql_maintenance.sh`, …)는 **venv 없이** 동작합니다.  
-> Python 도구(`validate-guide`, `pytest`, `capture_metrics.py`)만 venv가 필요합니다.
+> `kinit_cdp.sh`, `spark_sql_maintenance.sh` 같은 **쉘 스크립트**는 venv 없이도 됩니다.  
+> `validate-guide`, `pytest`만 venv가 필요합니다.
 
-## CDP integration tests
+### 5-4. 연습용 테이블 만들기 (seed)
 
-Run on a **CDP edge node** with YARN client access and a dedicated maintenance test table (not PROD).
-
-### 1. Configure environment
+**시험 전에 꼭 해 주세요.** “정리가 필요한 상태”를 일부러 만듭니다.
 
 ```bash
-cp .env.example .env
-# Edit .env: catalog, TEST_DATABASE, TEST_TABLE, partition filter, Spark configs
+source scripts/load_env.sh
+./scripts/kinit_cdp.sh
+python scripts/seed_iceberg_table.py --recreate
 ```
 
-| Variable | Description |
-|----------|-------------|
-| `CDP_SPARK_MASTER` | `yarn` or Spark master URL |
-| `KERBEROS_PRINCIPAL` | e.g. `systest@QE-INFRA-AD.CLOUDERA.COM` |
-| `KERBEROS_KEYTAB` | Path to service/user keytab |
-| `TRUSTSTORE_PATH` | Auto-TLS JKS/PEM truststore (from CM) |
-| `ICEBERG_CATALOG` | Catalog name (e.g. `spark_catalog`) |
-| `TEST_DATABASE` | Sandbox database |
-| `TEST_TABLE` | Partitioned Iceberg test table |
-| `TEST_PARTITION_FILTER` | `where` clause for `rewrite_data_files` |
-| `SPARK_CONF_*` | Spark config (underscores → dots) |
-| `CDP_ALLOW_DESTRUCTIVE` | `true` to enable T6 tests |
-| `CDP_SKIP_KERBEROS` | `true` to skip kinit in pytest (ticket already held) |
+seed가 만드는 것:
 
-### 2. Minimum Spark / Iceberg config
+- 작은 파일 **약 20개** (한 파티션) → T5 compaction 연습
+- DELETE/UPDATE → position delete 파일 → T6 연습
+- snapshot·manifest 많음 → T4, T6 연습
 
-```
-spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
-spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkCatalog
-spark.sql.catalog.spark_catalog.type=hive
-```
+끝나면 화면에 **snapshots, files 개수** 요약이 나옵니다.
 
-Map these in `.env` using the `SPARK_CONF_` prefix (see `.env.example`).
+---
 
-### 3. Run integration tests
+## 6. 자동 시험 (pytest) — T1부터 T6까지
+
+### 시험 돌리기
 
 ```bash
-python3 -m venv .venv   # or: ./scripts/setup_venv.sh
 source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e ".[cdp]"
 
-# Safe tiers only (T1–T5: catalog, metadata, dry-run orphan, rewrite_manifests, rewrite_data_files)
+# 안전한 시험만 (T1~T5) — 추천
 pytest tests/integration/ -m "cdp and not destructive" -v
 
-# Include destructive tests (requires CDP_ALLOW_DESTRUCTIVE=true)
+# 위험한 시험까지 (T6) — .env에 CDP_ALLOW_DESTRUCTIVE=true 필요
 pytest tests/integration/ -m cdp -v
 ```
 
-### Test tiers
+**6개 통과**면: CDP에서 **안전한 정리 작업**이 잘 돌아간다는 뜻입니다.
 
-| Tier | Test | Safety |
-|------|------|--------|
-| T1 | SparkSession active | Safe |
-| T2 | `SHOW TABLES`, `DESCRIBE`, `.files` metadata | Safe |
-| T3 | `remove_orphan_files(dry_run=true)` | Safe |
-| T4 | `rewrite_manifests(use_caching=false)` | Medium |
-| T5 | `rewrite_data_files` with partition `where` | Medium |
-| T6 | `expire_snapshots`, `rewrite_position_delete_files` | Destructive (opt-in) |
+### 각 시험이 뭘 확인하나요?
 
-## CDP verification walkthrough (Spark SQL & storage)
+| 시험 | 이름 | 쉬운 설명 | 위험도 |
+|------|------|-----------|--------|
+| **T1** | Spark 연결 | 컴퓨터(Spark)가 켜졌나? | 안전 |
+| **T2** | 테이블 확인 | 장부가 Iceberg 맞나? 파일 목록 보기 | 안전 |
+| **T3** | 고아 파일 조회 | 버려진 파일 **목록만** (삭제 안 함) | 안전 |
+| **T4** | manifest 정리 | **목차만** 정리 (종이 내용은 그대로) | 보통 |
+| **T5** | data file 정리 | **7/21 서랍** 작은 파일 합치기 | 보통 |
+| **T6** | snapshot·delete 정리 | 옛 사진 지우기, delete 정리 | **주의** |
 
-Iceberg를 처음 접하는 분도 따라올 수 있도록, **integration test tier(T1–T6)** 마다 Spark SQL로
-논리·메타데이터를 확인하고, **HDFS / Ozone**에서 실제 파일·폴더를 확인하는 방법을 정리했습니다.
+### 시험 코드는 어디?
 
-별도 스크립트 없이, edge node에서 **명령을 복사해 실행**하면 됩니다.
+- 준비: `tests/integration/conftest.py` (Spark 연결, `.env` 읽기)
+- 문제: `tests/integration/test_cdp_procedures.py`
+- SQL 만들기: `src/guide_validator/template_renderer.py`
 
-### 이 lab의 클러스터 식별자
+---
 
-| Storage | 식별자 | URI 예시 |
-|---------|--------|----------|
-| HDFS HA | NameService **`ns1`** | `hdfs://ns1/...` |
-| Ozone | Service ID **`ozone1784520717`** | `ofs://ozone1784520717/...` |
+## 7. 직접 눈으로 확인하기
 
-테이블이 HDFS warehouse에 있으면 `hdfs://ns1/...`, Ozone bucket에 있으면
-`ofs://ozone1784520717/...`로 시작합니다. **어느 쪽인지는 아래 Location 조회 결과가
-기준**이며, 예시 경로는 seed 기본값(`iceberg_compaction_test.txn_events`) 기준입니다.
+아래 명령은 **복사해서 edge node에 붙여 넣으면** 됩니다.  
+새 스크립트는 만들지 않아도 됩니다.
 
-### 사전 준비
+### 공통 준비
 
 ```bash
 cd ~/spark-iceberg-compaction
@@ -151,45 +202,15 @@ source scripts/load_env.sh
 ./scripts/kinit_cdp.sh
 ```
 
-Spark SQL은 프로젝트 wrapper로 실행합니다 (Kerberos · Iceberg catalog 설정 포함):
+Spark SQL 실행:
 
 ```bash
-./scripts/spark_sql_maintenance.sh -e "SELECT current_catalog();"
+./scripts/spark_sql_maintenance.sh -e "SELECT 1;"
 ```
 
-아래 SQL 블록 전체를 `-e "..."` 인자로 넘기거나, `spark-sql` 대화형 세션에 붙여 넣으면 됩니다.
+---
 
-**대상 테이블 (`.env` 기본값)**
-
-| 항목 | 값 |
-|------|-----|
-| Catalog | `spark_catalog` |
-| Database | `iceberg_compaction_test` |
-| Table | `txn_events` |
-| Full name | `iceberg_compaction_test.txn_events` |
-| 파티션 | `business_date = 2026-07-21` |
-
-### Iceberg 테이블 폴더 구조 (개념)
-
-Location 아래 대략 다음과 같이 구성됩니다.
-
-```
-{Location}/
-├── metadata/          ← snapshot·manifest·*.metadata.json (Iceberg “두뇌”)
-└── data/
-    └── business_date=2026-07-21/
-        ├── *.parquet  ← DATA 파일
-        └── *.parquet  ← delete 파일 (merge-on-read)
-```
-
-- **Spark SQL** → Iceberg 메타데이터 뷰(`.files`, `.snapshots` 등)로 “현재 snapshot이
-  참조하는” 파일을 봅니다.
-- **hdfs / ozone** → 디스크에 실제로 존재하는 모든 파일을 봅니다. compaction 직후에는
-  **이전 snapshot이 참조하는 old 파일**이 expire 전까지 disk에 남을 수 있습니다.
-
-### 0단계 — 테이블 Location 확인 (모든 tier 공통)
-
-먼저 warehouse 경로를 확인합니다. 이후 HDFS/Ozone 명령의 `{TABLE_LOC}` 자리에 넣습니다.
+### 0단계 — 테이블이 디스크 어디에 있나?
 
 **Spark SQL**
 
@@ -197,25 +218,21 @@ Location 아래 대략 다음과 같이 구성됩니다.
 USE spark_catalog;
 
 DESCRIBE TABLE EXTENDED spark_catalog.iceberg_compaction_test.txn_events;
--- 출력에서 col_name = Location 인 행의 data_type 값이 {TABLE_LOC}
-
-SHOW TBLPROPERTIES iceberg_compaction_test.txn_events;
+-- Location 행에 적힌 주소가 테이블 폴더입니다
 ```
 
-**HDFS warehouse 예시** (Hive 기본 경로 패턴 — Location이 `hdfs://ns1/...`일 때)
+**HDFS 예시** (Location이 `hdfs://ns1/...` 일 때)
 
 ```bash
-# DESCRIBE 결과를 복사해 사용
 export TABLE_LOC="hdfs://ns1/user/hive/warehouse/iceberg_compaction_test.db/txn_events"
 
 hdfs dfs -ls "${TABLE_LOC}"
 hdfs dfs -ls "${TABLE_LOC}/metadata"
 hdfs dfs -ls "${TABLE_LOC}/data"
 hdfs dfs -ls "${TABLE_LOC}/data/business_date=2026-07-21"
-hdfs dfs -du -h "${TABLE_LOC}"
 ```
 
-**Ozone 예시** (Location이 `ofs://ozone1784520717/...`일 때)
+**Ozone 예시** (Location이 `ofs://ozone1784520717/...` 일 때)
 
 ```bash
 export TABLE_LOC="ofs://ozone1784520717/volume/bucket/path/txn_events"
@@ -223,137 +240,79 @@ export TABLE_LOC="ofs://ozone1784520717/volume/bucket/path/txn_events"
 hdfs dfs -ls "${TABLE_LOC}"
 hdfs dfs -ls "${TABLE_LOC}/metadata"
 hdfs dfs -ls "${TABLE_LOC}/data"
-hdfs dfs -du -h "${TABLE_LOC}"
 ```
 
-> Ozone 경로도 CDP에서는 `hdfs dfs`로 접근하는 경우가 많습니다. `ofs://` URI 그대로
-> `-ls` / `-du`에 사용하세요.
+> Ozone도 `hdfs dfs -ls ofs://ozone1784520717/...` 처럼 쓸 수 있는 경우가 많습니다.
 
 ---
 
-### Seed 직후 — `seed_iceberg_table.py` 결과 확인
+### Seed 직후 — “지저분한 상태” 맞나?
 
-pytest 전에 seed로 “유지보수가 필요한 상태”를 만듭니다.
-
-```bash
-python scripts/seed_iceberg_table.py --recreate
-```
-
-**Spark SQL — seed 요약과 동일 지표**
+**Spark SQL**
 
 ```sql
 USE spark_catalog;
 
--- 논리 row 수
-SELECT count(*) AS row_cnt
-FROM iceberg_compaction_test.txn_events;
+-- 거래 건수
+SELECT count(*) FROM iceberg_compaction_test.txn_events;
 
--- 파일 종류별 개수 (seed 직후 대략: DATA ~20, POSITION_DELETES ~2)
-SELECT content, count(*) AS file_cnt, sum(file_size_in_bytes) AS bytes
-FROM iceberg_compaction_test.txn_events.files
+-- 파일 종류별 개수 (DATA ~20, delete ~2 정도)
+SELECT content, count(*) 
+FROM iceberg_compaction_test.txn_events.files 
 GROUP BY content;
 
-SELECT count(*) AS snapshot_cnt FROM iceberg_compaction_test.txn_events.snapshots;
-SELECT count(*) AS manifest_cnt FROM iceberg_compaction_test.txn_events.manifests;
-
--- 대상 파티션 DATA 파일 (T5 compaction 전 ≈ 20개)
-SELECT count(*) AS data_files_in_partition,
-       cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes
-FROM iceberg_compaction_test.txn_events.files
-WHERE content = 'DATA'
-  AND partition.business_date = DATE '2026-07-21';
+SELECT count(*) FROM iceberg_compaction_test.txn_events.snapshots;
 ```
 
-**HDFS / Ozone — 물리 파일**
+**디스크**
 
 ```bash
 hdfs dfs -count -h "${TABLE_LOC}/data/business_date=2026-07-21"
 hdfs dfs -ls -h "${TABLE_LOC}/data/business_date=2026-07-21"
-hdfs dfs -ls "${TABLE_LOC}/metadata" | grep metadata.json | tail -5
 ```
 
 ---
 
-### T1 — Spark 세션 연결 (`test_t1_spark_session_active`)
-
-**의미:** YARN · Kerberos · Spark가 정상인지 확인합니다. 테이블·스토리지 변경 없음.
+### T1 — Spark 잘 붙었나?
 
 **Spark SQL**
 
 ```sql
-SELECT current_catalog() AS catalog, current_database() AS db;
-SELECT version() AS spark_version;
+SELECT current_catalog(), version();
 ```
 
-**Storage**
+**디스크**
 
 ```bash
-hdfs dfs -test -d "${TABLE_LOC}" && echo "table location exists"
-```
-
-**YARN (참고)**
-
-```bash
-yarn application -list | grep -E 'guide-validator|iceberg-maintenance' || true
+hdfs dfs -test -d "${TABLE_LOC}" && echo "테이블 폴더 있음"
 ```
 
 ---
 
-### T2-A — 테이블 등록 · Iceberg Provider (`test_t2_show_tables_and_describe`)
-
-**의미:** Metastore에 테이블이 등록됐고, 형식이 Iceberg인지 확인합니다.
+### T2 — Iceberg 테이블 맞나?
 
 **Spark SQL**
 
 ```sql
 USE spark_catalog;
-
-SHOW TABLES IN iceberg_compaction_test;
-
 DESCRIBE TABLE EXTENDED spark_catalog.iceberg_compaction_test.txn_events;
--- Provider = iceberg 확인
+-- Provider = iceberg 인지 확인
+
+SELECT file_path, file_size_in_bytes, content
+FROM iceberg_compaction_test.txn_events.files
+LIMIT 5;
 ```
 
-**Storage — Location과 실제 디렉터리 일치**
+**디스크**
 
 ```bash
-hdfs dfs -ls "${TABLE_LOC}"
-hdfs dfs -ls "${TABLE_LOC}/metadata" | tail -10
-```
-
----
-
-### T2-B — Iceberg 메타데이터 `.files` (`test_t2_iceberg_metadata_files`)
-
-**의미:** Iceberg가 추적하는 **DATA / delete 파일 목록**을 SQL로 조회합니다.
-
-**Spark SQL**
-
-```sql
-SELECT file_path, file_size_in_bytes, content, partition
-FROM iceberg_compaction_test.txn_events.files
-LIMIT 10;
-
-SELECT content, count(*) AS file_cnt
-FROM iceberg_compaction_test.txn_events.files
-GROUP BY content;
-```
-
-**Storage — SQL의 file_path와 disk 대조**
-
-위 쿼리에서 `file_path` 몇 개를 복사한 뒤:
-
-```bash
-# file_path 예: hdfs://ns1/user/hive/warehouse/.../xxx.parquet
-#           또는 ofs://ozone1784520717/.../xxx.parquet
+hdfs dfs -ls "${TABLE_LOC}/metadata" | tail -5
 hdfs dfs -ls "hdfs://ns1/user/hive/warehouse/iceberg_compaction_test.db/txn_events/data/business_date=2026-07-21/"
 ```
 
 ---
 
-### T3 — Orphan 파일 dry-run (`test_t3_remove_orphan_files_dry_run`)
-
-**의미:** 장부(metadata)에 없는 **고아 파일 후보**를 조회만 합니다. **삭제하지 않습니다.**
+### T3 — 버려진 파일 후보 (삭제 안 함)
 
 **Spark SQL**
 
@@ -365,72 +324,64 @@ CALL spark_catalog.system.remove_orphan_files(
 );
 ```
 
-**Storage**
-
-dry-run 결과에 나온 `file_path`가 disk에 존재하는지 확인:
+결과에 나온 경로가 disk에 있는지:
 
 ```bash
-hdfs dfs -test -e "hdfs://ns1/path/from/dry_run_result.parquet" && echo "exists on disk"
+hdfs dfs -test -e "hdfs://ns1/...(결과에 나온 경로)" && echo "있음"
 ```
-
-의도적 orphan 테스트: `python scripts/inject_orphan_files.py` 실행 후 dry-run을
-다시 호출합니다.
 
 ---
 
-### T4 — Manifest 재작성 (`test_t4_rewrite_manifests`)
+### T4 — 목차(manifest)만 정리
 
-**의미:** DATA parquet는 그대로 두고 **manifest(색인)만** 정리합니다. planning 개선 목적.
-
-**Spark SQL — 실행 전후 비교**
+**실행 전**
 
 ```sql
--- BEFORE
-SELECT count(*) AS manifest_cnt FROM iceberg_compaction_test.txn_events.manifests;
-SELECT count(*) AS snapshot_cnt FROM iceberg_compaction_test.txn_events.snapshots;
+SELECT count(*) FROM iceberg_compaction_test.txn_events.manifests;
+```
 
+**실행**
+
+```sql
 CALL spark_catalog.system.rewrite_manifests(
   table => 'iceberg_compaction_test.txn_events',
   use_caching => false
 );
-
--- AFTER
-SELECT count(*) AS manifest_cnt FROM iceberg_compaction_test.txn_events.manifests;
-SELECT count(*) AS snapshot_cnt FROM iceberg_compaction_test.txn_events.snapshots;
-
-SELECT made_current_at, snapshot_id, summary
-FROM iceberg_compaction_test.txn_events.history
-ORDER BY made_current_at DESC
-LIMIT 5;
 ```
 
-**Storage**
+**실행 후**
+
+```sql
+SELECT count(*) FROM iceberg_compaction_test.txn_events.manifests;
+SELECT snapshot_id, made_current_at 
+FROM iceberg_compaction_test.txn_events.history 
+ORDER BY made_current_at DESC LIMIT 3;
+```
+
+**디스크** — `metadata/` 안 파일 변화, `data/` parquet 개수는 거의 같음
 
 ```bash
-# metadata/ 아래 avro·json 변화 (data/ parquet 개수는 보통 동일)
-hdfs dfs -ls "${TABLE_LOC}/metadata" | grep -E '\.avro|metadata\.json' | tail -10
+hdfs dfs -ls "${TABLE_LOC}/metadata" | tail -10
 hdfs dfs -count "${TABLE_LOC}/data"
 ```
 
-**기대:** snapshot +1, manifest 수 변화 가능, `data/` parquet 개수는 거의 동일.
-
 ---
 
-### T5 — Data file compaction (`test_t5_rewrite_data_files_partition`)
+### T5 — 작은 파일 합치기 (가장 중요)
 
-**의미:** 한 파티션(`2026-07-21`)의 **작은 parquet를 큰 파일로 합칩니다.** 가이드 §3 핵심.
-
-**Spark SQL — 실행 전후 비교**
+**실행 전** — 7/21 파티션 파일이 많고 작음 (~20개)
 
 ```sql
--- BEFORE
 SELECT count(*) AS files,
-       cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes,
-       sum(file_size_in_bytes) AS total_bytes
+       cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes
 FROM iceberg_compaction_test.txn_events.files
 WHERE content = 'DATA'
   AND partition.business_date = DATE '2026-07-21';
+```
 
+**실행**
+
+```sql
 CALL spark_catalog.system.rewrite_data_files(
   table => 'iceberg_compaction_test.txn_events',
   strategy => 'binpack',
@@ -443,77 +394,58 @@ CALL spark_catalog.system.rewrite_data_files(
     'partial-progress.enabled', 'false'
   )
 );
+```
 
--- AFTER
+**실행 후** — 파일 수 ↓, 평균 크기 ↑, **거래 건수는 같음**
+
+```sql
 SELECT count(*) AS files,
-       cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes,
-       sum(file_size_in_bytes) AS total_bytes
+       cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes
 FROM iceberg_compaction_test.txn_events.files
 WHERE content = 'DATA'
   AND partition.business_date = DATE '2026-07-21';
 
--- 논리 row 수는 동일해야 함
 SELECT count(*) FROM iceberg_compaction_test.txn_events
 WHERE business_date = DATE '2026-07-21';
 ```
 
-**Storage**
+| | 정리 전 | 정리 후 |
+|--|---------|---------|
+| 파일 개수 | ~20 | ~1~5 |
+| 파일 크기 | 작음 | 큼 |
+| 거래 건수 | ~12만 | **같음** |
+
+**디스크**
 
 ```bash
 hdfs dfs -count -h "${TABLE_LOC}/data/business_date=2026-07-21"
 hdfs dfs -ls -h "${TABLE_LOC}/data/business_date=2026-07-21"
-hdfs dfs -du -h "${TABLE_LOC}/data"
-hdfs dfs -ls "${TABLE_LOC}/metadata" | grep metadata.json | tail -3
 ```
-
-| 지표 | seed 직후 (BEFORE) | compaction 후 (AFTER) |
-|------|-------------------|----------------------|
-| 파티션 DATA file count (`.files`) | ~20 | ~1–5 |
-| avg file size | 작음 | 큼 |
-| logical rows | ~120k | 동일 |
-| snapshots | N | N+1 |
-
-> disk의 parquet **총 개수**는 expire 전까지 old + new가 공존할 수 있습니다.
-> **`.files` 메타데이터**가 “현재 snapshot 기준 live 파일”을 보여 줍니다.
 
 ---
 
-### T6 — Destructive tier (선택, `CDP_ALLOW_DESTRUCTIVE=true`)
+### T6 — (선택) 더 강한 정리
 
-pytest `-m "cdp and destructive"` 또는 운영 runbook 순서로 실행합니다.
+`.env`에 `CDP_ALLOW_DESTRUCTIVE=true` 후:
 
-#### T6-A — `expire_snapshots`
+```bash
+pytest tests/integration/ -m "cdp and destructive" -v
+```
 
-**Spark SQL**
+**expire_snapshots** — 옛 snapshot 지우기
 
 ```sql
-SELECT count(*) AS snapshot_cnt FROM iceberg_compaction_test.txn_events.snapshots;
-
 CALL spark_catalog.system.expire_snapshots(
   table => 'iceberg_compaction_test.txn_events',
   older_than => timestamp '2000-01-01 00:00:00',
   retain_last => 20,
   max_concurrent_deletes => 4
 );
-
-SELECT count(*) AS snapshot_cnt FROM iceberg_compaction_test.txn_events.snapshots;
 ```
 
-**Storage** — 만료 후 unreferenced 파일 정리 시 disk 사용량 감소 가능 (지연될 수 있음)
-
-```bash
-hdfs dfs -du -h "${TABLE_LOC}"
-hdfs dfs -count -h "${TABLE_LOC}/data"
-```
-
-#### T6-B — `rewrite_position_delete_files`
-
-**Spark SQL**
+**rewrite_position_delete_files** — delete 파일 정리
 
 ```sql
-SELECT count(*) FROM iceberg_compaction_test.txn_events.files
-WHERE content = 'POSITION_DELETES';
-
 CALL spark_catalog.system.rewrite_position_delete_files(
   table => 'iceberg_compaction_test.txn_events',
   options => map(
@@ -522,130 +454,78 @@ CALL spark_catalog.system.rewrite_position_delete_files(
     'max-file-group-size-bytes', '21474836480'
   )
 );
-
-SELECT count(*) FROM iceberg_compaction_test.txn_events.files
-WHERE content = 'POSITION_DELETES';
-```
-
-**Storage**
-
-```bash
-hdfs dfs -ls -R "${TABLE_LOC}/data" | grep -E '\.parquet' | tail -20
-hdfs dfs -count -h "${TABLE_LOC}/data"
 ```
 
 ---
 
-### tier ↔ 가이드 ↔ 확인 포인트 요약
+## 8. 설명서만 검사하기 (클러스터 없이)
 
-| Tier | Integration test | 가이드 | Spark SQL로 볼 것 | Storage로 볼 것 |
-|------|------------------|--------|-------------------|-----------------|
-| Seed | (사전 준비) | §3–§6 전제 | `.files`, `.snapshots` | `data/`, `metadata/` |
-| T1 | Spark session | §1 전제 | `current_catalog()` | Location 존재 |
-| T2 | DESCRIBE + `.files` | §1 catalog | `Provider=iceberg`, `.files` | Location 구조 |
-| T3 | orphan dry-run | §8 | `CALL ... dry_run=true` | 후보 path 존재 |
-| T4 | rewrite_manifests | §5 | `.manifests`, `.history` | `metadata/*.avro` |
-| T5 | rewrite_data_files | §3 | 파티션 `.files` count/avg | `data/business_date=.../` |
-| T6 | expire / position delete | §4, §6 | `.snapshots`, delete files | disk `du` 변화 |
+HTML 가이드 문법·링크가 맞는지 **오프라인**으로 확인:
 
-### metrics CSV로 한 번에 비교 (선택)
+```bash
+validate-guide --skip-links
+pytest tests/ -m "not cdp and not network" -v
+```
 
-단계 전후 수치를 CSV로 저장하려면 기존 helper를 사용할 수 있습니다:
+---
+
+## 9. 운영할 때 — 더 자세한 글
+
+Kerberos + Auto-TLS 환경에서 **한 단계씩** 정리하고 전/후를 비교하려면:
+
+- [docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)
+- [docs/CDP_Kerberos_Keytab_Guide.md](docs/CDP_Kerberos_Keytab_Guide.md)
+
+한 단계 실행 예:
+
+```bash
+./scripts/run_step_with_verify.sh step2_rewrite_data_files run
+```
+
+전/후 숫자를 CSV로 저장:
 
 ```bash
 export MAINTENANCE_RUN_ID=demo_$(date +%Y%m%d_%H%M)
 ./scripts/capture_metrics.sh before_t5
-# T5 CALL 실행 ...
+# T5 실행 ...
 ./scripts/capture_metrics.sh after_t5
-./scripts/compare_metrics.sh metrics/${MAINTENANCE_RUN_ID}/before_t5.csv \
-  metrics/${MAINTENANCE_RUN_ID}/after_t5.csv step2_rewrite_data_files
 ```
 
-생성되는 SQL은 `src/guide_validator/verification_queries.py`의 `build_metrics_sql()`과
-동일합니다.
+---
 
-## Reproducible test scenario (seed data)
-
-The guide's procedures only do something when the table is in the "bad" state each
-one fixes. `scripts/seed_iceberg_table.py` builds a format-v2, merge-on-read,
-`business_date`-partitioned table (`iceberg_compaction_test.txn_events`) and
-deliberately creates those states with plain Spark (no external dependency):
-
-| Guide section | Reproduced by |
-|---------------|---------------|
-| §3 `rewrite_data_files` | many small files in one partition (N small append commits) |
-| §4 `rewrite_position_delete_files` | position deletes via `DELETE`/`UPDATE` (merge-on-read) |
-| §5 `rewrite_manifests` | manifests accumulated from many commits |
-| §6 `expire_snapshots` | many snapshots (see override note below) |
-| §8 `remove_orphan_files` | `scripts/inject_orphan_files.py` writes unreferenced parquet |
-
-```bash
-source scripts/load_env.sh      # loads .env (TARGET_/TEST_ = iceberg_compaction_test.txn_events)
-./scripts/kinit_cdp.sh
-
-# 1) create + seed (20 small batches by default) and make position deletes
-python scripts/seed_iceberg_table.py --recreate
-
-# 2) (optional) inject orphan files aged 10 days so guide's -7d catches them
-python scripts/inject_orphan_files.py --count 3 --age-days 10
-
-# 3) run each step with pre/post verification
-./scripts/run_step_with_verify.sh step2_rewrite_data_files run
-./scripts/run_step_with_verify.sh step3_rewrite_position_delete_files run
-./scripts/run_step_with_verify.sh step4_rewrite_manifests run
-./scripts/run_step_with_verify.sh step6_metadata_properties run
-./scripts/run_step_with_verify.sh step5_expire_snapshots run
-./scripts/run_step_with_verify.sh step7_orphan_dry_run run
-./scripts/run_step_with_verify.sh step7_orphan_delete run   # after approving dry-run
-```
-
-> **Same-day reproduction caveat.** The guide's real values (`expire_snapshots`
-> `older_than => -30d, retain_last => 20`; `remove_orphan_files older_than => -7d`)
-> will **not** expire freshly-seeded snapshots or catch brand-new orphans. To see
-> those two steps actually change something on a just-seeded table, set the test
-> overrides in `.env` and restore the guide values for real operations:
->
-> ```bash
-> EXPIRE_OLDER_THAN="CURRENT_TIMESTAMP"
-> EXPIRE_RETAIN_LAST=1
-> ORPHAN_OLDER_THAN="CURRENT_TIMESTAMP"
-> ```
->
-> `inject_orphan_files.py` backdates file mtime (default 10 days), so orphan
-> cleanup works with the guide's real `-7d` value without any override.
-
-## Updating the guide
-
-1. Replace `guide/SBI_Iceberg_Compaction_Maintenance_Guide_reviewed.html`
-2. Run `validate-guide --skip-links`
-3. Run `pytest tests/ -m "not cdp and not network" -v`
-
-## Project layout
+## 10. 정리 순서 (가이드와 같음)
 
 ```
-guide/                          # HTML guide under validation
-spec/                           # Iceberg 1.5.2 procedure & property specs
-src/guide_validator/            # Parsers, validators, CDP helpers
-scripts/validate_guide.py       # CLI wrapper
-scripts/seed_iceberg_table.py   # Create + seed test table (reproduce compaction states)
-scripts/inject_orphan_files.py  # Write unreferenced files for remove_orphan_files
-scripts/run_step_with_verify.sh # Per-step procedure + pre/post metrics compare
-tests/unit/                     # Unit tests
-tests/integration/              # CDP Spark integration tests
+사전 점검
+  → 작은 파일 합치기 (rewrite_data_files)     ← T5, §3
+  → delete 파일 정리 (조건부)                  ← T6, §4
+  → manifest 정리 (조건부)                    ← T4, §5
+  → snapshot 만료                               ← T6, §6
+  → 고아 파일 (별도, dry-run 먼저)              ← T3, §8
 ```
 
-## Mapping to guide §10 checklist
+---
 
-| Checklist item | Validated by |
-|----------------|--------------|
-| Iceberg SQL extension, catalog, Ranger, storage | CDP T1–T2 (manual Ranger review) |
-| Format version, delete type, files/snapshots scale | CDP T2 metadata queries |
-| Partition lock / no overlapping jobs | Policy validator + operational runbook |
-| Table-scope maintenance windows | Policy validator (table-scope procedures) |
-| YARN queue / executor limits | Manual CDP config (not automated) |
-| Pilot partition metrics | CDP T5 |
-| Orphan dry-run approval | Static validator (2-step pattern) + CDP T3 |
+## 11. 자주 묻는 질문
 
-## License
+**Q. pytest 6개 passed면 PROD에 바로 적용해도 되나요?**  
+A. **연습 테이블에서 검증 완료**라는 뜻입니다. PROD는 승인, 권한(Ranger), YARN queue,
+보존 기간을 따로 확인해야 합니다.
 
-Internal Cloudera Professional Services tooling for the SBI CDP engagement.
+**Q. Spark SQL과 hdfs ls 결과가 다른데요?**  
+A. 정상일 수 있습니다. SQL은 **지금 snapshot이 쓰는 파일**, hdfs는 **disk 전체**를
+봅니다. 정리 직후 옛 파일이 남을 수 있습니다.
+
+**Q. `make_date(2026, 7, 21)` 은 왜 쓰나요?**  
+A. CDP에서 `CALL` 명령의 날짜 따옴표가 깨지는 경우가 있어서, 따옴표 없이 쓰는
+형식입니다.
+
+**Q. 가이드 HTML을 바꿨어요.**  
+A. `guide/SBI_Iceberg_Compaction_Maintenance_Guide_reviewed.html` 교체 후
+`validate-guide --skip-links` 실행.
+
+---
+
+## 12. 라이선스
+
+Cloudera Professional Services — SBI CDP engagement 내부 도구.
