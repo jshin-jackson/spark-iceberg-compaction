@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 """Seed a CDP Iceberg test table so every guide compaction scenario is reproducible.
 
 The script builds an Iceberg format-v2, merge-on-read, partitioned table and then
@@ -13,9 +13,9 @@ Data is generated with plain Spark expressions (no external dependency). Values 
 shaped to look like SBI (bank) transaction events.
 
 Usage:
-    python scripts/seed_iceberg_table.py
-    python scripts/seed_iceberg_table.py --batches 30 --rows-per-batch 20000
-    python scripts/seed_iceberg_table.py --recreate
+    python3.11 scripts/seed_iceberg_table.py
+    python3.11 scripts/seed_iceberg_table.py --batches 30 --rows-per-batch 20000
+    python3.11 scripts/seed_iceberg_table.py --recreate
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 """Capture Iceberg table metrics to CSV/JSON for step-wise verification."""
 
 from __future__ import annotations

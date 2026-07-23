@@ -678,11 +678,12 @@ ls -la metrics/${MAINTENANCE_RUN_ID}/
 
 ## 10. 검증 프로젝트와의 연계
 
-이 저장소의 자동 검증·CDP 통합 테스트 (Python 도구 — **`python3`** 사용, `python -m venv` 아님):
+이 저장소의 자동 검증·CDP 통합 테스트 (Python **3.11** — `python3.11` / `.venv`):
 
 ```bash
-./scripts/setup_venv.sh
+./scripts/setup_venv.sh          # python3.11 로 venv 생성
 source .venv/bin/activate
+python --version                 # Python 3.11.x
 
 # 문서 정적 검증
 validate-guide --skip-links
@@ -692,6 +693,9 @@ pytest tests/integration/ -m "cdp and not destructive" -v
 ```
 
 Maintenance shell 스크립트(`kinit_cdp.sh`, `run_step_with_verify.sh` 등)는 venv 없이 동작합니다.
+Python helper(`capture_metrics.sh` 등)는 `.env`의 `PYTHON=python3.11`을 사용합니다.
+
+> **`python`(2.7)·`python3`(3.8 parcel)은 사용하지 마세요.**
 
 **pip editable 설치 실패 시** (`setup.py not found` / old pip 21.x):
 

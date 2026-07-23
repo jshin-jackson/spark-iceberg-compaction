@@ -32,6 +32,7 @@ FULL_TABLE="${TARGET_DATABASE}.${TARGET_TABLE}"
 : "${EXPIRE_RETAIN_LAST:=20}"
 : "${EXPIRE_MAX_CONCURRENT_DELETES:=4}"
 : "${ORPHAN_OLDER_THAN:=timestamp '2000-01-01 00:00:00'}"
+: "${PYTHON:=python3.11}"
 
 METRICS_DIR="${METRICS_DIR:-${PROJECT_ROOT}/metrics/${MAINTENANCE_RUN_ID}}"
 PRE_FILE="${METRICS_DIR}/${STEP}_pre.csv"
@@ -48,7 +49,7 @@ compare() {
 }
 
 rewrite_data_files_where() {
-  python3 -c 'from guide_validator.template_renderer import call_procedure_where; import os; print(call_procedure_where(os.environ.get("PARTITION_FILTER", "")))'
+  "${PYTHON}" -c 'from guide_validator.template_renderer import call_procedure_where; import os; print(call_procedure_where(os.environ.get("PARTITION_FILTER", "")))'
 }
 
 run_procedure() {

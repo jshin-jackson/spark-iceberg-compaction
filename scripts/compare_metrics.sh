@@ -12,4 +12,13 @@ if [[ $# -lt 3 ]]; then
   exit 1
 fi
 
-python3 -m guide_validator.metrics_compare "$1" "$2" --step "$3" "${@:4}"
+if [[ -f "${PROJECT_ROOT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/load_env.sh"
+  set +a
+fi
+
+: "${PYTHON:=python3.11}"
+
+"${PYTHON}" -m guide_validator.metrics_compare "$1" "$2" --step "$3" "${@:4}"

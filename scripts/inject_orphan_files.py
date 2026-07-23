@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 """Inject unreferenced (orphan) files into an Iceberg table's data location.
 
 Iceberg only tracks files listed in its manifests. Any extra physical file that
@@ -9,8 +9,8 @@ This script places such files and, by default, backdates their modification time
 so the guide's real ``older_than => -7 days`` value catches them.
 
 Usage:
-    python scripts/inject_orphan_files.py
-    python scripts/inject_orphan_files.py --count 3 --age-days 10
+    python3.11 scripts/inject_orphan_files.py
+    python3.11 scripts/inject_orphan_files.py --count 3 --age-days 10
 """
 
 from __future__ import annotations

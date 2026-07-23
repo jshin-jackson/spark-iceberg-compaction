@@ -79,6 +79,29 @@ Iceberg를 **은행 거래 장부**라고 생각해 보세요.
 | 전체 이름 | `iceberg_compaction_test.txn_events` |
 | 연습 파티션 | `2026-07-21` (business_date) |
 
+### Python 버전 (CDP edge — 꼭 읽기)
+
+이 lab의 `/usr/bin`에는 Python이 **여러 개** 있습니다. **잘못 쓰면 바로 실패**합니다.
+
+| 명령 | 버전 | 이 프로젝트 |
+|------|------|-------------|
+| `python` | **2.7.18** | ❌ 쓰지 마세요 |
+| `python3` | **3.8.12** (parcel) | ❌ venv·pytest에 쓰지 마세요 |
+| **`python3.11`** | **3.11.11** | ✅ **이것만** 사용 |
+
+`.env`에 `PYTHON=python3.11` 이 있습니다. `setup_venv.sh`와 shell helper도 이 값을 씁니다.
+
+```bash
+python3.11 --version    # Python 3.11.11 이어야 함
+```
+
+가상환경(`.venv`)을 켠 뒤에는 `python`이 3.11을 가리킵니다:
+
+```bash
+source .venv/bin/activate
+python --version        # Python 3.11.11
+```
+
 ---
 
 ## 4. 프로젝트 폴더 — 뭐가 어디 있나요?
@@ -119,15 +142,16 @@ cd ~/spark-iceberg-compaction
 # ── 최초 1회 ──
 cp .env.example .env
 chmod +x scripts/*.sh
-./scripts/setup_venv.sh          # 또는 수동 venv + pip install -e ".[dev]"
+./scripts/setup_venv.sh          # python3.11 로 .venv 생성
 
 # ── 매번 (처음부터 다시 할 때) ──
 source scripts/load_env.sh
 ./scripts/kinit_cdp.sh
-source .venv/bin/activate
+source .venv/bin/activate        # activate 후 python = 3.11
 
 # ★ 핵심: 테이블 삭제 후 새 데이터 생성 (“정리 전” 상태)
 python scripts/seed_iceberg_table.py --recreate
+# venv 없이: python3.11 scripts/seed_iceberg_table.py --recreate
 
 # (선택) 고아 파일 시연 — T3 dry-run에서 후보가 보이게
 python scripts/inject_orphan_files.py --count 3 --age-days 10
@@ -208,21 +232,26 @@ chmod +x scripts/*.sh
 ./scripts/kinit_cdp.sh
 ```
 
-### 6-3. Python 가상환경 (자동 시험·검사 도구용)
+### 6-3. Python 3.11 가상환경
 
-CDP edge node에서는 **`python3`** 를 씁니다.
+CDP edge에서는 **`python3.11`** 로 venv를 만듭니다. `python`(2.7)·`python3`(3.8)은
+**사용하지 않습니다.**
 
 ```bash
+# 권장: .env 의 PYTHON=python3.11 사용
 ./scripts/setup_venv.sh
-# 또는
-python3 -m venv .venv
+
+# 수동
+python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
+python --version    # Python 3.11.11 확인
 ```
 
-> `kinit_cdp.sh`, `spark_sql_maintenance.sh` 같은 **쉘 스크립트**는 venv 없이도 됩니다.  
-> `validate-guide`, `pytest`만 venv가 필요합니다.
+> `kinit_cdp.sh`, `spark_sql_maintenance.sh` — venv **없이** 동작 (Java/Spark만).  
+> `seed`, `pytest`, `validate-guide` — venv **켠 뒤** `python` 사용 (3.11).  
+> venv 없이 Python만 쓸 때는 **`python3.11`** 을 직접 지정하세요.
 
 ### 6-4. seed 상세
 
@@ -593,9 +622,15 @@ export MAINTENANCE_RUN_ID=demo_$(date +%Y%m%d_%H%M)
 
 ## 12. 자주 묻는 질문
 
+**Q. `python` / `python3` 쓰면 안 되나요?**  
+A. 이 lab에서 `python`은 **2.7**, `python3`는 **3.8** 입니다. 이 프로젝트는
+**`python3.11`(3.11.11)** + `.venv` 기준입니다. `.env`의 `PYTHON=python3.11`을
+지키세요.
+
 **Q. 테스트만 돌리면 데이터가 새로 생기나요?**  
-A. **아니요.** `python scripts/seed_iceberg_table.py --recreate` 가 “처음부터”의
-**기본**입니다. [5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장) 순서를 따르세요.
+A. **아니요.** `python3.11 scripts/seed_iceberg_table.py --recreate` (또는 venv 안에서
+`python scripts/seed_iceberg_table.py --recreate`) 가 “처음부터”의 **기본**입니다.
+[5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장) 순서를 따르세요.
 
 **Q. pytest 6개 passed면 PROD에 바로 적용해도 되나요?**  
 A. **연습 테이블에서 검증 완료**라는 뜻입니다. PROD는 승인, 권한(Ranger), YARN queue,

@@ -27,6 +27,7 @@ fi
 
 : "${TARGET_DATABASE:=${TEST_DATABASE:-}}"
 : "${TARGET_TABLE:=${TEST_TABLE:-}}"
+: "${PYTHON:=python3.11}"
 FULL_TABLE="${TARGET_DATABASE}.${TARGET_TABLE}"
 
 if [[ -z "${TARGET_DATABASE}" || -z "${TARGET_TABLE}" ]]; then
@@ -43,7 +44,7 @@ PROPS_FILE="${METRICS_DIR}/${LABEL}_tblproperties.tsv"
 export MAINTENANCE_RUN_ID METRICS_DIR
 
 # Generate metrics SQL via Python (no Spark required for generation)
-PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}" python3 - <<'PY' > "${SQL_FILE}"
+PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}" "${PYTHON}" - <<'PY' > "${SQL_FILE}"
 from guide_validator.verification_queries import MetricsContext, build_metrics_sql
 print(build_metrics_sql(MetricsContext.from_env()))
 PY
