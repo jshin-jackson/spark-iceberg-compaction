@@ -1,379 +1,332 @@
-# Iceberg 테이블 정리 가이드 — 쉬운 설명서
+# Iceberg Table Maintenance — Practical Guide
 
-> **SBI(SBI 은행)용 Iceberg 유지보수 가이드**가 맞는지, CDP 클러스터에서 실제로
-> 돌아가는지 확인하는 프로젝트입니다.  
+> Validates the **SBI Iceberg maintenance guide** (HTML) and exercises **Iceberg Spark procedures** on a CDP cluster.  
 > CDP Private Cloud Base 7.3.1.600+ · Spark 3.5.4 · Iceberg 1.5.2
 
-**바로 시작:** [5. 기본 가이드 — 처음부터 끝까지](#5-기본-가이드--처음부터-끝까지-권장) (seed → pytest)
+**Quick start:** [5. Default workflow — start to finish](#5-default-workflow--start-to-finish-recommended) (seed → pytest)
 
 ---
 
-## 1. 이게 뭔가요?
+## 1. What is this project?
 
-### 한 줄 요약
+### One-line summary
 
-**“은행 거래 장부(Iceberg 테이블)를 깔끔하게 정리하는 방법”** 이 적혀 있는
-**설명서(HTML 가이드)** 가 맞는지, **연습용 테이블**에서 **자동으로 시험**해 보는
-프로젝트입니다.
+This repo checks that the **operational HTML guide** for bank-style Iceberg maintenance is correct, and **automated integration tests** run the same procedures against a **practice table** on CDP.
 
-### 왜 필요한가요?
+### Why it matters
 
-데이터를 계속 넣으면 파일이 **작은 조각**으로 많이 쌓입니다.  
-마치 **책 한 권을 100장짜리 종이 1000장**으로 나눠 보관하는 것과 비슷합니다.
-
-이렇게 되면:
-
-- 찾기가 느려지고
-- 정리(유지보수)가 필요해집니다
-
-이 프로젝트는 **정리 방법 설명서**와 **실제 정리 명령**이 맞게 동작하는지
-확인합니다.
+Continuous writes create many **small data files**. Queries slow down and **maintenance** (compaction, snapshot expiry, orphan cleanup) becomes necessary. This project ties the **guide**, **Spark SQL / procedures**, and **verification scripts** together so you can reproduce and test the workflow safely in a lab.
 
 ---
 
-## 2. Iceberg — 아주 쉽게
+## 2. Iceberg in plain terms
 
-Iceberg를 **은행 거래 장부**라고 생각해 보세요.
+Think of an Iceberg table as a **ledger**:
 
-| 말 | 쉬운 뜻 | 컴퓨터 안에서는 |
-|----|---------|----------------|
-| **테이블** | 거래 장부 한 권 | `iceberg_compaction_test.txn_events` |
-| **데이터 파일** | 거래 내역이 적힌 종이 묶음 | HDFS/Ozone의 `.parquet` 파일 |
-| **파티션** | 날짜별 서랍 (예: 7월 21일) | `business_date=2026-07-21` 폴더 |
-| **스냅샷** | “그때 장부 상태” 사진 | commit 할 때마다 하나씩 생김 |
-| **매니페스트** | “어떤 종이가 어느 서랍에 있는지” 목록 | `metadata/` 안의 파일 |
-| **정리(compaction)** | 작은 종이 묶음 → 큰 묶음으로 합치기 | `rewrite_data_files` |
+| Term | Plain meaning | In this repo |
+|------|----------------|--------------|
+| **Table** | One ledger book | `iceberg_compaction_test.txn_events` |
+| **Data file** | Bundles of transaction rows on storage | `.parquet` under HDFS/Ozone |
+| **Partition** | A drawer by business date | `business_date=2026-07-21` |
+| **Snapshot** | A point-in-time view of the table | Created on each commit |
+| **Manifest** | Index of which files belong where | Under `metadata/` |
+| **Compaction** | Merging small files into fewer larger ones | `rewrite_data_files` |
 
-### 테이블 폴더는 이렇게 생겼어요
+### Table layout on storage
 
 ```
-{테이블 위치}/
-├── metadata/     ← 장부의 “목차·버전 기록” (Iceberg 두뇌)
+{table location}/
+├── metadata/     ← snapshots, manifests (Iceberg metadata)
 └── data/
     └── business_date=2026-07-21/
-        └── *.parquet   ← 실제 거래 데이터
+        └── *.parquet   ← row data (+ optional *-deletes.parquet)
 ```
 
-**두 가지로 볼 수 있어요**
+**Two ways to inspect files**
 
-- **Spark SQL** → Iceberg가 **지금 쓰는** 파일 목록 (`.files` 등)
-- **hdfs 명령** → 디스크에 **실제로 있는** 모든 파일  
-  (정리 직후에는 옛날 파일이 잠깐 남을 수도 있어요)
+- **Spark SQL** (e.g. `table.files`) — files **referenced by the current snapshot**
+- **`hdfs dfs`** — **everything on disk** under the table location (older unreferenced files may remain until snapshot expiry)
 
 ---
 
-## 3. 우리 lab 정보 (기억해 두세요)
+## 3. Lab environment
 
-| 저장소 | 이름 | 주소 예시 |
-|--------|------|-----------|
+| Storage | ID | Example URI |
+|---------|-----|-------------|
 | HDFS | NameService **`ns1`** | `hdfs://ns1/...` |
 | Ozone | Service ID **`ozone1784520717`** | `ofs://ozone1784520717/...` |
 
-**HDFS HA (standby NameNode 경고)**  
-Spark/YARN이 `host:8020` standby NameNode에 붙으면 `Operation category READ is not supported in state standby` 가
-나올 수 있습니다. `.env`에 `HADOOP_CONF_DIR`, `HDFS_NAMESERVICE=ns1`, `spark.hadoop.fs.defaultFS=hdfs://ns1` 이
-설정되어 있고, `source scripts/load_env.sh` 또는 `kinit_cdp.sh` 가 `cdp_client_env.sh` 를 불러옵니다.
-Python(seed·pytest)은 `cdp_spark.py` 가 같은 설정을 Spark 세션에 넣습니다.
+**HDFS HA (standby NameNode warnings)**  
+If Spark/YARN briefly hits a standby NameNode on `host:8020`, you may see `Operation category READ is not supported in state standby`. Ensure `.env` includes `HADOOP_CONF_DIR`, `HDFS_NAMESERVICE=ns1`, and `SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://ns1`, then `source scripts/load_env.sh` or run `kinit_cdp.sh` (which loads `cdp_client_env.sh`). Python entry points (`seed`, pytest) apply the same settings via `cdp_spark.py`.
 
-**연습용 테이블** (`.env` 기본값)
+**Practice table** (`.env` defaults)
 
-| 항목 | 값 |
-|------|-----|
-| 카탈로그 | `spark_catalog` |
-| 데이터베이스 | `iceberg_compaction_test` |
-| 테이블 | `txn_events` |
-| 전체 이름 | `iceberg_compaction_test.txn_events` |
-| 연습 파티션 | `2026-07-21` (business_date) |
-| 테이블 Location (seed 후, HDFS) | `hdfs://ns1/warehouse/tablespace/external/hive/iceberg_compaction_test.db/txn_events` |
+| Item | Value |
+|------|--------|
+| Catalog | `spark_catalog` |
+| Database | `iceberg_compaction_test` |
+| Table | `txn_events` |
+| Full name | `iceberg_compaction_test.txn_events` |
+| Practice partition | `2026-07-21` (`business_date`) |
+| Table location after seed (HDFS) | `hdfs://ns1/warehouse/tablespace/external/hive/iceberg_compaction_test.db/txn_events` |
 
-> 이 lab은 external Hive warehouse (`/warehouse/tablespace/external/hive/...`) 를 씁니다.
-> `/user/hive/warehouse/...` 가 아닙니다. 항상 `DESCRIBE TABLE EXTENDED` 의 **Location** 행을 기준으로
-> `TABLE_LOC` 을 잡으세요.
+> This lab uses the **external Hive warehouse** (`/warehouse/tablespace/external/hive/...`), not `/user/hive/warehouse/...`. Always set `TABLE_LOC` from the **Location** row in `DESCRIBE TABLE EXTENDED`.
 
-### Python 버전 (CDP edge — 꼭 읽기)
+### Python on the CDP edge node
 
-이 lab의 `/usr/bin`에는 Python이 **여러 개** 있습니다. **잘못 쓰면 바로 실패**합니다.
+| Command | Version | Use in this project? |
+|---------|---------|----------------------|
+| `python` | 2.7.18 | No |
+| `python3` | 3.8.12 (parcel) | No (do not use for venv/pytest) |
+| **`python3.11`** | **3.11.11** | **Yes — required** |
 
-| 명령 | 버전 | 이 프로젝트 |
-|------|------|-------------|
-| `python` | **2.7.18** | ❌ 쓰지 마세요 |
-| `python3` | **3.8.12** (parcel) | ❌ venv·pytest에 쓰지 마세요 |
-| **`python3.11`** | **3.11.11** | ✅ **이것만** 사용 |
-
-`.env`에 `PYTHON=python3.11` 이 있습니다. `setup_venv.sh`와 shell helper도 이 값을 씁니다.
+`.env` sets `PYTHON=python3.11`. `setup_venv.sh` and shell helpers use it.
 
 ```bash
-python3.11 --version    # Python 3.11.11 이어야 함
-```
-
-가상환경(`.venv`)을 켠 뒤에는 `python`이 3.11을 가리킵니다:
-
-```bash
+python3.11 --version    # expect Python 3.11.11
 source .venv/bin/activate
-python --version        # Python 3.11.11
+python --version        # Python 3.11.11 inside venv
 ```
 
 ---
 
-## 4. 프로젝트 폴더 — 뭐가 어디 있나요?
+## 4. Repository layout
 
 ```
 spark-iceberg-compaction/
-├── guide/              ← 고객용 HTML 설명서 (정리 방법)
-├── spec/               ← Iceberg 1.5.2 공식 규칙 (기준)
-├── scripts/            ← 실행 도구 (로그인, 데이터 만들기, 정리 실행)
-├── src/guide_validator/← 검사·SQL 만드는 Python 코드
-├── tests/integration/  ← CDP에서 도는 자동 시험 (T1~T6)
-└── docs/               ← Kerberos·운영 runbook (더 자세한 글)
+├── guide/              ← Customer HTML maintenance guide
+├── spec/               ← Iceberg 1.5.2 procedure reference
+├── scripts/            ← kinit, seed, Spark SQL wrapper, step runner
+├── src/guide_validator/← Guide validation and SQL templates
+├── tests/integration/  ← CDP integration tests (T1–T6)
+└── docs/               ← Kerberos / Auto-TLS runbooks
 ```
 
-| 파일 | 하는 일 |
-|------|---------|
-| `scripts/kinit_cdp.sh` | Kerberos 로그인 (출입증) |
-| `scripts/cdp_client_env.sh` | HDFS HA nameservice·Hadoop conf (load_env/kinit에서 자동) |
-| `scripts/seed_iceberg_table.py` | 연습용 “지저분한” 테이블 만들기 |
-| `scripts/spark_sql_maintenance.sh` | Spark SQL 실행 (설정 자동) |
-| `scripts/run_step_with_verify.sh` | 정리 + 전/후 비교 |
-| `tests/integration/test_cdp_procedures.py` | 자동 시험 문제지 |
+| Script | Purpose |
+|--------|---------|
+| `scripts/kinit_cdp.sh` | Kerberos ticket |
+| `scripts/cdp_client_env.sh` | HDFS HA / Hadoop conf (via load_env / kinit) |
+| `scripts/seed_iceberg_table.py` | Build a “needs maintenance” practice table |
+| `scripts/spark_sql_maintenance.sh` | Spark SQL with env + Iceberg settings |
+| `scripts/run_step_with_verify.sh` | Run a guide step with before/after checks |
+| `tests/integration/test_cdp_procedures.py` | Automated procedure tests |
 
 ---
 
-## 5. 기본 가이드 — 처음부터 끝까지 (권장)
+## 5. Default workflow — start to finish (recommended)
 
-**이 프로젝트의 기본 사용법**은 아래 순서입니다.
+This is the **standard way** to use the project.
 
-매번 **같은 “정리 전” 상태**에서 시험·데모를 하려면, **pytest 전에 seed로 테이블을
-새로 만드는 것**이 필수입니다.  
-**pytest만 실행하면 데이터가 자동으로 생기지 않습니다.**
+For a repeatable **pre-maintenance** state, you **must seed the table before pytest**. **pytest does not create data.**
 
-### 한 번에 실행 (복사용)
+### Copy-paste sequence
 
 ```bash
 cd ~/spark-iceberg-compaction
 
-# ── 최초 1회 ──
+# ── One-time setup ──
 cp .env.example .env
 chmod +x scripts/*.sh
-./scripts/setup_venv.sh          # python3.11 로 .venv 생성
+./scripts/setup_venv.sh          # creates .venv with python3.11
 
-# ── 매번 (처음부터 다시 할 때) ──
+# ── Each full run ──
 source scripts/load_env.sh
 ./scripts/kinit_cdp.sh
-source .venv/bin/activate        # activate 후 python = 3.11
+source .venv/bin/activate
 
-# ★ 핵심: 테이블 삭제 후 새 데이터 생성 (“정리 전” 상태)
+# ★ Reset table to pre-maintenance state
 python scripts/seed_iceberg_table.py --recreate
-# venv 없이: python3.11 scripts/seed_iceberg_table.py --recreate
+# without venv: python3.11 scripts/seed_iceberg_table.py --recreate
 
-# (선택) 고아 파일 시연 — T3 dry-run에서 후보가 보이게
+# (Optional) inject orphans for T3 dry-run demo
 python scripts/inject_orphan_files.py --count 3 --age-days 10
 
-# 자동 시험 (T1~T5)
+# Safe integration tests (T1–T5)
 pytest tests/integration/ -m "cdp and not destructive" -v
 ```
 
-**6 passed**면 CDP에서 안전한 정리 작업(T1~T5)이 잘 동작한다는 뜻입니다.
+**6 passed** means non-destructive maintenance procedures (T1–T5) succeeded on CDP.
 
-### 각 단계가 하는 일
+### What each step does
 
-| 순서 | 명령 | 하는 일 |
-|------|------|---------|
-| 1 | `kinit_cdp.sh` | Kerberos 로그인 (클러스터 출입) |
-| 2 | `seed --recreate` | 테이블 **삭제 후** 작은 파일 ~20개 등 **정리가 필요한 상태** 만들기 |
-| 3 | `inject_orphan_files` (선택) | orphan dry-run(T3) 데모용 파일 주입 |
-| 4 | `pytest` | T1~T5 자동 검증 (**T4·T5는 테이블을 실제로 변경**) |
+| Step | Command | Effect |
+|------|---------|--------|
+| 1 | `kinit_cdp.sh` | Kerberos login |
+| 2 | `seed --recreate` | Drop/recreate table with ~20 small DATA files, etc. |
+| 3 | `inject_orphan_files` (optional) | Orphans for T3 dry-run |
+| 4 | `pytest` | T1–T5 validation (**T4/T5 modify the table**) |
 
-### seed 직후 기대값 (참고)
+### Expected metrics right after seed
 
-| 항목 | 대략 |
-|------|------|
-| logical rows | ~120,000 |
-| snapshots | ~23 |
-| DATA files (7/21 파티션) | ~20 |
-| position delete files | ~2 |
+| Metric | Approximate |
+|--------|-------------|
+| Logical rows | ~120,000 |
+| Snapshots | ~23 |
+| DATA files (partition 2026-07-21) | ~20 |
+| Position delete files | ~2 |
 
-### 다시 처음부터 하고 싶을 때
+### Resetting after tests
 
-pytest를 **한 번 돌린 뒤**에는 T4(manifest)·T5(compaction) 때문에 테이블이 이미
-바뀌어 있습니다. **전/후 데모를 다시** 하려면 seed부터 다시 하세요.
+After pytest, T4 (manifests) and T5 (compaction) have changed the table. To demo again from scratch:
 
 ```bash
 python scripts/seed_iceberg_table.py --recreate
 pytest tests/integration/ -m "cdp and not destructive" -v
 ```
 
-### T6까지 포함 (선택)
+### Including T6 (optional)
 
-`.env`에 `CDP_ALLOW_DESTRUCTIVE=true` 설정 후:
+Set `CDP_ALLOW_DESTRUCTIVE=true` in `.env`, then:
 
 ```bash
 pytest tests/integration/ -m cdp -v
 ```
 
-> seed 직후 **당일** expire 효과를 보려면 `.env.example`의 `EXPIRE_OLDER_THAN`,
-> `ORPHAN_OLDER_THAN` override를 참고하세요. 가이드 기본값(30일·7일)은 방금 seed한
-> snapshot/orphan에는 거의 적용되지 않습니다.
+> For **same-day** expire/orphan effects on a fresh seed, see `EXPIRE_OLDER_THAN` and `ORPHAN_OLDER_THAN` in `.env.example`. Guide defaults (30d / 7d) rarely affect brand-new snapshots.
 
-### pytest만으로 안 되는 것
+### What pytest does *not* do
 
-| 내용 | 방법 |
-|------|------|
-| 데이터·“정리 전” 상태 만들기 | `seed --recreate` (**기본 가이드 필수**) |
-| orphan **실제 삭제** | `run_step_with_verify.sh step7_orphan_delete` |
-| metadata TBLPROPERTIES | `run_step_with_verify.sh step6_metadata_properties` |
-| 전/후 지표 CSV 비교 | `capture_metrics.sh` + `compare_metrics.sh` |
+| Goal | How |
+|------|-----|
+| Pre-maintenance data | `seed --recreate` (**required**) |
+| Live orphan delete | `run_step_with_verify.sh step7_orphan_delete` |
+| Metadata TBLPROPERTIES | `run_step_with_verify.sh step6_metadata_properties` |
+| CSV before/after metrics | `capture_metrics.sh` + `compare_metrics.sh` |
 
-운영 runbook 전체: [docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)
+Full operations runbook: [docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)
 
 ---
 
-## 6. 처음 설정 (최초 1회)
+## 6. First-time setup
 
-### 6-1. 설정 파일 만들기
+### 6-1. Configuration
 
 ```bash
 cd ~/spark-iceberg-compaction
 cp .env.example .env
-# 필요하면 .env 내용 수정
+# edit .env if needed
 ```
 
-### 6-2. 로그인 (Kerberos)
+### 6-2. Kerberos
 
 ```bash
 chmod +x scripts/*.sh
 ./scripts/kinit_cdp.sh
 ```
 
-### 6-3. Python 3.11 가상환경
+### 6-3. Python 3.11 virtualenv
 
-CDP edge에서는 **`python3.11`** 로 venv를 만듭니다. `python`(2.7)·`python3`(3.8)은
-**사용하지 않습니다.**
+Do **not** use system `python` (2.7) or `python3` (3.8) for this project.
 
 ```bash
-# 권장: .env 의 PYTHON=python3.11 사용
 ./scripts/setup_venv.sh
 
-# 수동
+# Manual alternative
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
-python --version    # Python 3.11.11 확인
+python --version
 ```
 
-> `kinit_cdp.sh` — venv **없이** 동작 (Kerberos만).  
-> `spark_sql_maintenance.sh` — CDP `spark-sql` 없으면 **PySpark fallback** (venv 권장).  
-> `seed`, `pytest`, `validate-guide` — venv **켠 뒤** `python` 사용 (3.11).  
-> venv 없이 Python만 쓸 때는 **`python3.11`** 을 직접 지정하세요.
+> `kinit_cdp.sh` works without venv.  
+> `spark_sql_maintenance.sh` falls back to **PySpark** when the CDP `spark-sql` CLI is missing (venv recommended).  
+> `seed`, `pytest`, `validate-guide` — use venv `python` (3.11), or invoke `python3.11` explicitly.
 
-### 6-4. seed 상세
+### 6-4. Seed details
 
-**[5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장)** 의 `seed --recreate` 와 동일합니다.
-시험·데모 전에는 **항상** 이 단계부터 시작하세요.
+Same as [§5](#5-default-workflow--start-to-finish-recommended). Always start demos from seed.
 
 ```bash
 python scripts/seed_iceberg_table.py --recreate
-# 옵션: --batches 30 --rows-per-batch 20000
+# optional: --batches 30 --rows-per-batch 20000
 ```
 
-끝나면 터미널에 snapshots·files 개수 **요약**이 출력됩니다.
+The script prints a snapshot/file summary when finished.
 
 ---
 
-## 7. 자동 시험 (pytest) — T1부터 T6까지
+## 7. Automated tests (pytest) — T1 through T6
 
-> **먼저 [5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장)** 의 `seed --recreate` 를
-> 실행한 뒤 pytest를 돌리세요. pytest는 데이터를 만들지 않습니다.
-
-### 시험 돌리기
+Run [§5](#5-default-workflow--start-to-finish-recommended) **`seed --recreate`** before pytest.
 
 ```bash
 source .venv/bin/activate
 
-# 안전한 시험만 (T1~T5)
 pytest tests/integration/ -m "cdp and not destructive" -v
 
-# 위험한 시험까지 (T6) — .env에 CDP_ALLOW_DESTRUCTIVE=true 필요
+# T6 included — requires CDP_ALLOW_DESTRUCTIVE=true
 pytest tests/integration/ -m cdp -v
 ```
 
-### 각 시험이 뭘 확인하나요?
+### Test map
 
-| 시험 | 이름 | 쉬운 설명 | 위험도 |
-|------|------|-----------|--------|
-| **T1** | Spark 연결 | 컴퓨터(Spark)가 켜졌나? | 안전 |
-| **T2** | 테이블 확인 | 장부가 Iceberg 맞나? 파일 목록 보기 | 안전 |
-| **T3** | 고아 파일 조회 | 버려진 파일 **목록만** (삭제 안 함) | 안전 |
-| **T4** | manifest 정리 | **목차만** 정리 (종이 내용은 그대로) | 보통 |
-| **T5** | data file 정리 | **7/21 서랍** 작은 파일 합치기 | 보통 |
-| **T6** | snapshot·delete 정리 | 옛 사진 지우기, delete 정리 | **주의** |
+| Test | Name | What it checks | Risk |
+|------|------|----------------|------|
+| **T1** | Spark connectivity | Session and catalog | Safe |
+| **T2** | Table metadata | Iceberg provider, `.files` | Safe |
+| **T3** | Orphan dry-run | Lists orphans only (`dry_run => true`) | Safe |
+| **T4** | Manifest rewrite | Manifest maintenance | Moderate |
+| **T5** | Data file compaction | Bin-pack partition 2026-07-21 | Moderate |
+| **T6** | Snapshot / delete maintenance | Expire + position-delete rewrite | **Destructive** |
 
-### 시험 코드는 어디?
+### Code locations
 
-- 준비: `tests/integration/conftest.py` (Spark 연결, `.env` 읽기)
-- 문제: `tests/integration/test_cdp_procedures.py`
-- SQL 만들기: `src/guide_validator/template_renderer.py`
-
----
-
-## 8. Spark SQL 사용하기
-
-이 lab에서는 **`spark-sql` 명령을 직접 치지 않습니다.**  
-Kerberos·Auto-TLS·Iceberg catalog·HDFS HA 설정이 들어 있는 래퍼 스크립트를 씁니다.
-
-| 구분 | 사용하는 것 | 쓰지 않는 것 |
-|------|-------------|--------------|
-| SQL 실행 | `./scripts/spark_sql_maintenance.sh` | `spark-sql`, `spark3-sql` 직접 실행 |
-| PySpark lab | venv 켠 뒤 래퍼 실행 (자동 fallback) | `.venv/bin/spark-sql` (PySpark shim) |
-| 데이터 적재 | `python scripts/seed_iceberg_table.py` | Spark SQL로 INSERT |
-
-CDP `spark-sql` CLI가 없으면 stderr에  
-`NOTE: using PySpark SQL runner (same settings as seed/pytest).` 가 나옵니다. **정상**입니다.
+- Fixtures: `tests/integration/conftest.py`
+- Tests: `tests/integration/test_cdp_procedures.py`
+- SQL templates: `src/guide_validator/template_renderer.py`
 
 ---
 
-### 8-1. 진입 전 준비 (매번)
+## 8. Running Spark SQL
+
+Do **not** run bare `spark-sql` / `spark3-sql` on the edge node without project env. Use the wrapper:
+
+| Use | Do this | Avoid |
+|-----|---------|--------|
+| SQL | `./scripts/spark_sql_maintenance.sh` | Raw `spark-sql` without Kerberos/TLS/Iceberg HA |
+| PySpark lab | Wrapper + venv (auto fallback) | `.venv/bin/spark-sql` shim |
+| Load data | `python scripts/seed_iceberg_table.py` | Large INSERT-only SQL for seed |
+
+If the CDP CLI is missing, stderr shows  
+`NOTE: using PySpark SQL runner (same settings as seed/pytest).` — **expected**.
+
+---
+
+### 8-1. Before each session
 
 ```bash
 cd ~/spark-iceberg-compaction
-
-# 1) .env 변수 로드 (Kerberos, Iceberg catalog, HDFS HA 등)
 source scripts/load_env.sh
-
-# 2) Kerberos 티켓
 ./scripts/kinit_cdp.sh
-
-# 3) venv (PySpark fallback lab에서는 권장)
 source .venv/bin/activate
 
-# 4) (선택) seed 직후 “정리 전” 상태에서 SQL 확인할 때
+# optional: fresh pre-maintenance state
 python scripts/seed_iceberg_table.py --recreate
 ```
 
-연습 테이블 기본값 (`.env`):
+Default table (`.env`):
 
-| 항목 | 값 |
-|------|-----|
-| 카탈로그 | `spark_catalog` |
-| 테이블 | `iceberg_compaction_test.txn_events` |
-| 파티션 | `business_date = 2026-07-21` |
+| Item | Value |
+|------|--------|
+| Catalog | `spark_catalog` |
+| Table | `iceberg_compaction_test.txn_events` |
+| Partition | `business_date = 2026-07-21` |
 
 ---
 
-### 8-2. SQL 실행 방법 3가지
+### 8-2. Three ways to run SQL
 
-모든 방법이 **같은 스크립트**를 씁니다. YARN client mode로 job이 제출되며,  
-SELECT는 결과 표가 터미널에 출력되고, CALL은 procedure 결과가 출력됩니다.
+All paths use the same script (YARN client mode). `SELECT` prints a table; `CALL` prints procedure output.
 
-#### (1) 한 줄 실행 — `-e` (가장 많이 씀)
+#### (1) Inline — `-e`
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "SELECT 1;"
-```
-
-```bash
 ./scripts/spark_sql_maintenance.sh -e "SELECT current_catalog(), version();"
 ```
+
+Multiple statements (semicolon-separated) are supported in the PySpark runner:
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
@@ -382,10 +335,7 @@ SELECT count(*) FROM iceberg_compaction_test.txn_events;
 "
 ```
 
-> `-e` 뒤 문자열 전체가 **SQL 한 덩어리**입니다. 따옴표 안에서 `;` 로 여러 문장을
-> 이어 붙일 수 있습니다.
-
-#### (2) SQL 파일 실행 — `-f`
+#### (2) File — `-f`
 
 ```bash
 cat > /tmp/check_files.sql <<'SQL'
@@ -399,7 +349,7 @@ SQL
 ./scripts/spark_sql_maintenance.sh -f /tmp/check_files.sql
 ```
 
-#### (3) heredoc (여러 줄 · CALL procedure에 적합)
+#### (3) Heredoc (multi-line `CALL`)
 
 ```bash
 ./scripts/spark_sql_maintenance.sh <<'SQL'
@@ -412,51 +362,43 @@ CALL spark_catalog.system.rewrite_manifests(
 SQL
 ```
 
-> heredoc 끝 `SQL` 은 **줄 맨 앞**에만 써야 합니다 (앞에 공백 없음).
+> Closing `SQL` must be at **column 0** (no leading spaces).
 
-#### (4) 대화형 REPL — 이 lab에서는 보통 불가
+#### (4) Interactive REPL
 
-인자 없이 `./scripts/spark_sql_maintenance.sh` 를 실행하면 CDP `spark-sql` REPL에
-들어갑니다. 이 lab은 PySpark fallback이라 **REPL 대신 `-e` / `-f` / heredoc** 을
-사용하세요.
-
-PySpark만 쓰려면 `.env`에 `SPARK_SQL_BACKEND=pyspark` 를 넣을 수 있습니다.
+Argument-less `./scripts/spark_sql_maintenance.sh` opens the CDP REPL when available. On this lab, prefer `-e`, `-f`, or heredoc. Set `SPARK_SQL_BACKEND=pyspark` in `.env` to force PySpark only.
 
 ---
 
-### 8-3. 정리 procedure — shell 한 줄로 (자동)
-
-가이드 단계별 CALL을 **전/후 지표와 함께** 돌리려면:
+### 8-3. Guide steps via shell — `run_step_with_verify.sh`
 
 ```bash
 source scripts/load_env.sh
 ./scripts/kinit_cdp.sh
 source .venv/bin/activate
 
-# 예: T5 data file compaction (step2)
 ./scripts/run_step_with_verify.sh step2_rewrite_data_files run
 ```
 
-| step id | 하는 일 (가이드) |
-|---------|------------------|
-| `step2_rewrite_data_files` | T5 — 작은 data file 합치기 |
-| `step3_rewrite_position_delete_files` | delete file 정리 |
-| `step4_rewrite_manifests` | T4 — manifest 정리 |
-| `step5_expire_snapshots` | snapshot 만료 |
-| `step6_metadata_properties` | metadata TBLPROPERTIES |
-| `step7_orphan_dry_run` | T3 — orphan 목록만 (dry-run) |
-| `step7_orphan_delete` | orphan 실제 삭제 (**주의**) |
+| Step ID | Guide action |
+|---------|----------------|
+| `step2_rewrite_data_files` | T5 — compact data files |
+| `step3_rewrite_position_delete_files` | Compact position deletes |
+| `step4_rewrite_manifests` | T4 — rewrite manifests |
+| `step5_expire_snapshots` | Expire snapshots |
+| `step6_metadata_properties` | Metadata TBLPROPERTIES |
+| `step7_orphan_dry_run` | T3 — orphan list (dry-run) |
+| `step7_orphan_delete` | Delete orphans (**caution**) |
 
-모드: `pre` (실행 전 지표만) · `post` (실행 후) · `run` (pre → procedure → post → 비교)
+Modes: `pre` · `post` · `run` (pre → procedure → post → compare)
 
 ---
 
-### 8-4. 단계별 SQL — 무엇을 치면 되나?
+### 8-4. Step-by-step SQL (manual)
 
-아래 SQL은 **[8-2](#8-2-sql-실행-방법-3가지)** 의 `-e` / heredoc / `-f` 중 아무 방식으로
-실행하면 됩니다. 예시는 `-e` 한 줄 형태로 적습니다.
+Use any method from [§8-2](#8-2-three-ways-to-run-sql). Examples use `-e` or heredoc.
 
-#### 0단계 — 테이블 Location 확인
+#### Step 0 — Table location
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
@@ -465,7 +407,7 @@ DESCRIBE TABLE EXTENDED spark_catalog.iceberg_compaction_test.txn_events;
 "
 ```
 
-`Location` 행의 주소를 복사한 뒤 HDFS 확인 (이 lab seed 테이블 예시):
+Copy **Location**, then on HDFS (this lab’s seed path):
 
 ```bash
 export TABLE_LOC="hdfs://ns1/warehouse/tablespace/external/hive/iceberg_compaction_test.db/txn_events"
@@ -473,7 +415,9 @@ hdfs dfs -ls "${TABLE_LOC}"
 hdfs dfs -ls "${TABLE_LOC}/data/business_date=2026-07-21"
 ```
 
-#### Seed 직후 — “지저분한 상태” 확인
+> `DESCRIBE DETAIL` is **not** supported on CDP Spark 3.5; use `DESCRIBE TABLE EXTENDED`. The PySpark runner shows up to 1000 rows for `DESCRIBE`/`SHOW` so Location is visible.
+
+#### After seed — “messy” baseline
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
@@ -484,15 +428,17 @@ SELECT count(*) FROM iceberg_compaction_test.txn_events.snapshots;
 "
 ```
 
-기대: rows ~120,000 · DATA files ~20 · snapshots ~23
+Expect ~120,000 rows; `content=0` → ~20 DATA files, `content=1` → ~2 delete files; ~23 snapshots.
 
-#### T1 — Spark 연결
+> On CDP Spark 3.5, `.files.content` is typically **integer**: `0` = DATA, `1` = POSITION_DELETES. Use `content = 0` in filters (not the string `'DATA'`).
+
+#### T1 — Connectivity
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "SELECT current_catalog(), version();"
 ```
 
-#### T2 — Iceberg 테이블·파일 목록
+#### T2 — Iceberg table and files
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
@@ -503,9 +449,9 @@ FROM iceberg_compaction_test.txn_events.files LIMIT 5;
 "
 ```
 
-`Provider = iceberg` 인지 확인.
+Confirm `Provider = iceberg`.
 
-#### T3 — orphan 후보 (삭제 안 함)
+#### T3 — Orphan candidates (dry-run)
 
 ```bash
 ./scripts/spark_sql_maintenance.sh <<'SQL'
@@ -517,9 +463,11 @@ CALL spark_catalog.system.remove_orphan_files(
 SQL
 ```
 
-#### T4 — manifest 정리
+Empty output is normal unless you ran `inject_orphan_files.py`.
 
-**전:**
+#### T4 — Manifest rewrite
+
+**Before:**
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
@@ -527,7 +475,7 @@ SELECT count(*) FROM iceberg_compaction_test.txn_events.manifests;
 "
 ```
 
-**실행:**
+**Run:**
 
 ```bash
 ./scripts/spark_sql_maintenance.sh <<'SQL'
@@ -538,7 +486,7 @@ CALL spark_catalog.system.rewrite_manifests(
 SQL
 ```
 
-**후:**
+**After:**
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
@@ -549,21 +497,21 @@ ORDER BY made_current_at DESC LIMIT 3;
 "
 ```
 
-#### T5 — 작은 파일 합치기 (가장 중요)
+#### T5 — Data file compaction (primary maintenance)
 
-**전:**
+**Before:**
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
 SELECT count(*) AS files,
        cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes
 FROM iceberg_compaction_test.txn_events.files
-WHERE content = 'DATA'
+WHERE content = 0
   AND partition.business_date = DATE '2026-07-21';
 "
 ```
 
-**실행** (CDP에서 `where` 는 `make_date` 형식):
+**Run** (use `make_date` in `where` on CDP):
 
 ```bash
 ./scripts/spark_sql_maintenance.sh <<'SQL'
@@ -582,26 +530,28 @@ CALL spark_catalog.system.rewrite_data_files(
 SQL
 ```
 
-**후:**
+**After:**
 
 ```bash
 ./scripts/spark_sql_maintenance.sh -e "
 SELECT count(*) AS files,
        cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes
 FROM iceberg_compaction_test.txn_events.files
-WHERE content = 'DATA'
+WHERE content = 0
   AND partition.business_date = DATE '2026-07-21';
 SELECT count(*) FROM iceberg_compaction_test.txn_events
 WHERE business_date = DATE '2026-07-21';
 "
 ```
 
-| | 정리 전 | 정리 후 |
-|--|---------|---------|
-| 파일 개수 | ~20 | ~1~5 |
-| 거래 건수 | ~12만 | **같음** |
+| | Before | After |
+|--|--------|-------|
+| Active DATA files (Spark `.files`) | ~20 | ~1–5 |
+| Row count | ~120k | **unchanged** |
 
-#### T6 — (선택) snapshot·delete 정리
+> **HDFS file count** may stay high until `expire_snapshots` drops unreferenced files. Trust `.files` for active file counts.
+
+#### T6 — (optional) Snapshots and position deletes
 
 ```bash
 ./scripts/spark_sql_maintenance.sh <<'SQL'
@@ -623,13 +573,11 @@ CALL spark_catalog.system.rewrite_position_delete_files(
 SQL
 ```
 
-> PROD 또는 공유 lab에서는 T6 전에 승인·백업·`CDP_ALLOW_DESTRUCTIVE=true` 를 확인하세요.
+> On production or shared labs: approvals, backups, and `CDP_ALLOW_DESTRUCTIVE=true` before T6. To reclaim HDFS space in a **test** lab, lower `retain_last` (e.g. `1`) only after understanding snapshot retention impact.
 
 ---
 
-### 8-5. HDFS로 디스크 확인 (Spark SQL과 짝)
-
-Spark SQL은 **Iceberg가 지금 쓰는 파일**을, `hdfs dfs`는 **디스크 전체**를 봅니다.
+### 8-5. HDFS checks (pair with Spark SQL)
 
 ```bash
 export TABLE_LOC="hdfs://ns1/warehouse/tablespace/external/hive/iceberg_compaction_test.db/txn_events"
@@ -639,33 +587,27 @@ hdfs dfs -count -h "${TABLE_LOC}/data/business_date=2026-07-21"
 hdfs dfs -ls -h "${TABLE_LOC}/data/business_date=2026-07-21"
 ```
 
-Ozone 테이블이면 Location이 `ofs://ozone1784520717/...` 일 수 있습니다:
-
-```bash
-export TABLE_LOC="ofs://ozone1784520717/volume/bucket/path/txn_events"
-hdfs dfs -ls "${TABLE_LOC}/data"
-```
+For Ozone-backed tables, Location may be `ofs://ozone1784520717/...`.
 
 ---
 
-### 8-6. 자주 나는 메시지
+### 8-6. Common log messages
 
-| 메시지 | 의미 |
-|--------|------|
-| `NOTE: using PySpark SQL runner` | CDP CLI 대신 PySpark 사용 — **정상** |
-| `Picked up JAVA_TOOL_OPTIONS` | Auto-TLS truststore — **정상** |
-| YARN Application ID 로그 | client mode job 제출 — **정상** |
-| `make_date(2026, 7, 21)` | CDP `CALL` where 절용 날짜 형식 |
+| Message | Meaning |
+|---------|---------|
+| `NOTE: using PySpark SQL runner` | PySpark fallback — **OK** |
+| `Picked up JAVA_TOOL_OPTIONS` | Auto-TLS truststore — **OK** |
+| YARN application ID lines | Client-mode submission — **OK** |
+| `make_date(2026, 7, 21)` | CDP-safe date literal in `CALL` `where` clauses |
 
 ---
 
-## 9. 직접 눈으로 확인하기 (요약표)
+## 9. Manual verification checklist (summary)
 
-> **상세 CLI·SQL은 [8. Spark SQL 사용하기](#8-spark-sql-사용하기)** 를 보세요.  
-> 아래는 **[5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장)** 의 `seed --recreate` 직후,
-> pytest **전** “정리 전” 상태를 빠르게 훑을 때 쓰는 **요약**입니다.
+> Detailed CLI flows: [§8](#8-running-spark-sql).  
+> This section is a **short checklist** for the post-seed, pre-pytest state from [§5](#5-default-workflow--start-to-finish-recommended).
 
-### 공통 준비
+### Common prep
 
 ```bash
 cd ~/spark-iceberg-compaction
@@ -675,259 +617,37 @@ source .venv/bin/activate
 ./scripts/spark_sql_maintenance.sh -e "SELECT 1;"
 ```
 
----
+### Step 0 — Where is the table on disk?
 
-### 0단계 — 테이블이 디스크 어디에 있나?
+**Spark SQL:** `DESCRIBE TABLE EXTENDED` → **Location** row.
 
-**Spark SQL**
-
-```sql
-USE spark_catalog;
-
-DESCRIBE TABLE EXTENDED spark_catalog.iceberg_compaction_test.txn_events;
--- Location 행에 적힌 주소가 테이블 폴더입니다
-```
-
-**HDFS 예시** (Location이 `hdfs://ns1/...` 일 때)
+**HDFS:**
 
 ```bash
 export TABLE_LOC="hdfs://ns1/warehouse/tablespace/external/hive/iceberg_compaction_test.db/txn_events"
-
 hdfs dfs -ls "${TABLE_LOC}"
 hdfs dfs -ls "${TABLE_LOC}/metadata"
-hdfs dfs -ls "${TABLE_LOC}/data"
 hdfs dfs -ls "${TABLE_LOC}/data/business_date=2026-07-21"
 ```
 
-**Ozone 예시** (Location이 `ofs://ozone1784520717/...` 일 때)
+### Post-seed baseline
 
-```bash
-export TABLE_LOC="ofs://ozone1784520717/volume/bucket/path/txn_events"
+Spark: row count ~120k; `GROUP BY content` → ~20 / ~2; snapshot count ~23.  
+HDFS: many small parquet files under the partition path.
 
-hdfs dfs -ls "${TABLE_LOC}"
-hdfs dfs -ls "${TABLE_LOC}/metadata"
-hdfs dfs -ls "${TABLE_LOC}/data"
-```
+### T1–T6
 
-> Ozone도 `hdfs dfs -ls ofs://ozone1784520717/...` 처럼 쓸 수 있는 경우가 많습니다.
+Follow the SQL blocks in [§8-4](#8-4-step-by-step-sql-manual) and compare Spark `.files` vs `hdfs dfs` after T5/T6.
 
----
-
-### Seed 직후 — “지저분한 상태” 맞나?
-
-**Spark SQL**
-
-```sql
-USE spark_catalog;
-
--- 거래 건수
-SELECT count(*) FROM iceberg_compaction_test.txn_events;
-
--- 파일 종류별 개수 (DATA ~20, delete ~2 정도)
-SELECT content, count(*) 
-FROM iceberg_compaction_test.txn_events.files 
-GROUP BY content;
-
-SELECT count(*) FROM iceberg_compaction_test.txn_events.snapshots;
-```
-
-**디스크**
-
-```bash
-hdfs dfs -count -h "${TABLE_LOC}/data/business_date=2026-07-21"
-hdfs dfs -ls -h "${TABLE_LOC}/data/business_date=2026-07-21"
-```
-
----
-
-### T1 — Spark 잘 붙었나?
-
-**Spark SQL**
-
-```sql
-SELECT current_catalog(), version();
-```
-
-**디스크**
-
-```bash
-hdfs dfs -test -d "${TABLE_LOC}" && echo "테이블 폴더 있음"
-```
-
----
-
-### T2 — Iceberg 테이블 맞나?
-
-**Spark SQL**
-
-```sql
-USE spark_catalog;
-DESCRIBE TABLE EXTENDED spark_catalog.iceberg_compaction_test.txn_events;
--- Provider = iceberg 인지 확인
-
-SELECT file_path, file_size_in_bytes, content
-FROM iceberg_compaction_test.txn_events.files
-LIMIT 5;
-```
-
-**디스크**
-
-```bash
-hdfs dfs -ls "${TABLE_LOC}/metadata" | tail -5
-hdfs dfs -ls "${TABLE_LOC}/data/business_date=2026-07-21"
-```
-
----
-
-### T3 — 버려진 파일 후보 (삭제 안 함)
-
-**Spark SQL**
-
-```sql
-CALL spark_catalog.system.remove_orphan_files(
-  table => 'iceberg_compaction_test.txn_events',
-  older_than => timestamp '2000-01-01 00:00:00',
-  dry_run => true
-);
-```
-
-결과에 나온 경로가 disk에 있는지:
-
-```bash
-hdfs dfs -test -e "hdfs://ns1/...(결과에 나온 경로)" && echo "있음"
-```
-
----
-
-### T4 — 목차(manifest)만 정리
-
-**실행 전**
-
-```sql
-SELECT count(*) FROM iceberg_compaction_test.txn_events.manifests;
-```
-
-**실행**
-
-```sql
-CALL spark_catalog.system.rewrite_manifests(
-  table => 'iceberg_compaction_test.txn_events',
-  use_caching => false
-);
-```
-
-**실행 후**
-
-```sql
-SELECT count(*) FROM iceberg_compaction_test.txn_events.manifests;
-SELECT snapshot_id, made_current_at 
-FROM iceberg_compaction_test.txn_events.history 
-ORDER BY made_current_at DESC LIMIT 3;
-```
-
-**디스크** — `metadata/` 안 파일 변화, `data/` parquet 개수는 거의 같음
-
-```bash
-hdfs dfs -ls "${TABLE_LOC}/metadata" | tail -10
-hdfs dfs -count "${TABLE_LOC}/data"
-```
-
----
-
-### T5 — 작은 파일 합치기 (가장 중요)
-
-**실행 전** — 7/21 파티션 파일이 많고 작음 (~20개)
-
-```sql
-SELECT count(*) AS files,
-       cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes
-FROM iceberg_compaction_test.txn_events.files
-WHERE content = 'DATA'
-  AND partition.business_date = DATE '2026-07-21';
-```
-
-**실행**
-
-```sql
-CALL spark_catalog.system.rewrite_data_files(
-  table => 'iceberg_compaction_test.txn_events',
-  strategy => 'binpack',
-  where => 'business_date = make_date(2026, 7, 21)',
-  options => map(
-    'target-file-size-bytes', '536870912',
-    'min-input-files', '5',
-    'max-concurrent-file-group-rewrites', '2',
-    'max-file-group-size-bytes', '21474836480',
-    'partial-progress.enabled', 'false'
-  )
-);
-```
-
-**실행 후** — 파일 수 ↓, 평균 크기 ↑, **거래 건수는 같음**
-
-```sql
-SELECT count(*) AS files,
-       cast(avg(file_size_in_bytes) AS bigint) AS avg_bytes
-FROM iceberg_compaction_test.txn_events.files
-WHERE content = 'DATA'
-  AND partition.business_date = DATE '2026-07-21';
-
-SELECT count(*) FROM iceberg_compaction_test.txn_events
-WHERE business_date = DATE '2026-07-21';
-```
-
-| | 정리 전 | 정리 후 |
-|--|---------|---------|
-| 파일 개수 | ~20 | ~1~5 |
-| 파일 크기 | 작음 | 큼 |
-| 거래 건수 | ~12만 | **같음** |
-
-**디스크**
-
-```bash
-hdfs dfs -count -h "${TABLE_LOC}/data/business_date=2026-07-21"
-hdfs dfs -ls -h "${TABLE_LOC}/data/business_date=2026-07-21"
-```
-
----
-
-### T6 — (선택) 더 강한 정리
-
-`.env`에 `CDP_ALLOW_DESTRUCTIVE=true` 후:
+### T6 via pytest
 
 ```bash
 pytest tests/integration/ -m "cdp and destructive" -v
 ```
 
-**expire_snapshots** — 옛 snapshot 지우기
-
-```sql
-CALL spark_catalog.system.expire_snapshots(
-  table => 'iceberg_compaction_test.txn_events',
-  older_than => timestamp '2000-01-01 00:00:00',
-  retain_last => 20,
-  max_concurrent_deletes => 4
-);
-```
-
-**rewrite_position_delete_files** — delete 파일 정리
-
-```sql
-CALL spark_catalog.system.rewrite_position_delete_files(
-  table => 'iceberg_compaction_test.txn_events',
-  options => map(
-    'min-input-files', '2',
-    'max-concurrent-file-group-rewrites', '2',
-    'max-file-group-size-bytes', '21474836480'
-  )
-);
-```
-
 ---
 
-## 10. 설명서만 검사하기 (클러스터 없이)
-
-HTML 가이드 문법·링크가 맞는지 **오프라인**으로 확인:
+## 10. Validate the HTML guide (no cluster)
 
 ```bash
 validate-guide --skip-links
@@ -936,85 +656,72 @@ pytest tests/ -m "not cdp and not network" -v
 
 ---
 
-## 11. 운영할 때 — 더 자세한 글
-
-Kerberos + Auto-TLS 환경에서 **한 단계씩** 정리하고 전/후를 비교하려면:
+## 11. Production-oriented docs
 
 - [docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md](docs/CDP_Kerberos_AutoTLS_Maintenance_Runbook.md)
 - [docs/CDP_Kerberos_Keytab_Guide.md](docs/CDP_Kerberos_Keytab_Guide.md)
 
-한 단계 실행 예:
+Example step run:
 
 ```bash
 ./scripts/run_step_with_verify.sh step2_rewrite_data_files run
 ```
 
-전/후 숫자를 CSV로 저장:
+Capture metrics to CSV:
 
 ```bash
 export MAINTENANCE_RUN_ID=demo_$(date +%Y%m%d_%H%M)
 ./scripts/capture_metrics.sh before_t5
-# T5 실행 ...
+# run T5 ...
 ./scripts/capture_metrics.sh after_t5
 ```
 
 ---
 
-## 12. 정리 순서 (가이드와 같음)
+## 12. Maintenance order (matches the guide)
 
 ```
-사전 점검
-  → 작은 파일 합치기 (rewrite_data_files)     ← T5, §3
-  → delete 파일 정리 (조건부)                  ← T6, §4
-  → manifest 정리 (조건부)                    ← T4, §5
-  → snapshot 만료                               ← T6, §6
-  → 고아 파일 (별도, dry-run 먼저)              ← T3, §8
+Pre-checks
+  → Compact data files (rewrite_data_files)           ← T5
+  → Compact position deletes (conditional)            ← T6
+  → Rewrite manifests (conditional)                   ← T4
+  → Expire snapshots                                  ← T6
+  → Orphan cleanup (separate window; dry-run first)   ← T3
 ```
 
 ---
 
-## 13. 자주 묻는 질문
+## 13. FAQ
 
-**Q. seed 할 때 `standby` / `8020` / `READ is not supported` 경고가 나와요.**  
-A. HDFS HA 환경에서 클라이언트가 **standby NameNode**에 붙었을 때 나는 메시지입니다.
-`.env`에 `HADOOP_CONF_DIR=/etc/hadoop/conf`, `HDFS_NAMESERVICE=ns1`,
-`SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://ns1` 이 있는지 확인하고 `source scripts/load_env.sh` 후
-다시 seed 하세요. `Picked up JAVA_TOOL_OPTIONS` 는 Auto-TLS용으로 **정상**입니다.
+**Q. Standby NameNode / `8020` / `READ is not supported` during seed or Spark startup?**  
+A. Typical HDFS HA failover noise. Verify `.env`: `HADOOP_CONF_DIR=/etc/hadoop/conf`, `HDFS_NAMESERVICE=ns1`, `SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://ns1`, then `source scripts/load_env.sh`. `JAVA_TOOL_OPTIONS` for the truststore is expected.
 
-**Q. `spark_sql_maintenance.sh`에서 `SparkSQLCLIDriver` / `spark-sql not found` 에러가 나와요.**  
-A. 이 lab처럼 CDP `spark-sql` CLI가 없거나 `CDH/lib/spark3`만 있는 경우, 스크립트가
-**PySpark fallback**(`spark_sql_maintenance.py`, seed와 동일 설정)으로 자동 전환합니다.
-`NOTE: using PySpark SQL runner` 가 stderr에 나오면 정상입니다.  
-CLI를 강제하려면 `.env`에 `SPARK_HOME=...` 지정, PySpark만 쓰려면 `SPARK_SQL_BACKEND=pyspark`.
+**Q. `spark-sql not found` or `SparkSQLCLIDriver` errors?**  
+A. The wrapper switches to **PySpark** (`spark_sql_maintenance.py`) with the same settings as seed/pytest. `NOTE: using PySpark SQL runner` on stderr is OK. Set `SPARK_HOME` to force the CDP CLI, or `SPARK_SQL_BACKEND=pyspark` to force PySpark.
 
-**Q. `python` / `python3` 쓰면 안 되나요?**  
-A. 이 lab에서 `python`은 **2.7**, `python3`는 **3.8** 입니다. 이 프로젝트는
-**`python3.11`(3.11.11)** + `.venv` 기준입니다. `.env`의 `PYTHON=python3.11`을
-지키세요.
+**Q. Can I use `python` or `python3`?**  
+A. On this edge node, `python` is 2.7 and `python3` is 3.8. Use **`python3.11`** and `.venv` per `.env`.
 
-**Q. 테스트만 돌리면 데이터가 새로 생기나요?**  
-A. **아니요.** `python3.11 scripts/seed_iceberg_table.py --recreate` (또는 venv 안에서
-`python scripts/seed_iceberg_table.py --recreate`) 가 “처음부터”의 **기본**입니다.
-[5. 기본 가이드](#5-기본-가이드--처음부터-끝까지-권장) 순서를 따르세요.
+**Q. Does pytest create the practice table?**  
+A. **No.** Run `seed --recreate` first ([§5](#5-default-workflow--start-to-finish-recommended)).
 
-**Q. pytest 6개 passed면 PROD에 바로 적용해도 되나요?**  
-A. **연습 테이블에서 검증 완료**라는 뜻입니다. PROD는 승인, 권한(Ranger), YARN queue,
-보존 기간을 따로 확인해야 합니다.
+**Q. Six pytest passes — ready for production?**  
+A. That means the **practice table** workflow passed. Production still needs change control, Ranger policies, YARN queues, and retention policies.
 
-**Q. Spark SQL과 hdfs ls 결과가 다른데요?**  
-A. 정상일 수 있습니다. SQL은 **지금 snapshot이 쓰는 파일**, hdfs는 **disk 전체**를
-봅니다. 정리 직후 옛 파일이 남을 수 있습니다.
+**Q. Spark `.files` vs `hdfs dfs` counts differ?**  
+A. Expected. SQL reflects **current snapshot** references; HDFS lists **all objects on disk** until snapshot expiry removes unreferenced files.
 
-**Q. `make_date(2026, 7, 21)` 은 왜 쓰나요?**  
-A. CDP에서 `CALL` 명령의 날짜 따옴표가 깨지는 경우가 있어서, 따옴표 없이 쓰는
-형식입니다.
+**Q. Why `make_date(2026, 7, 21)` in `CALL`?**  
+A. Avoids fragile quoting of date literals in CDP `CALL` statements.
 
-**Q. 가이드 HTML을 바꿨어요.**  
-A. `guide/SBI_Iceberg_Compaction_Maintenance_Guide_reviewed.html` 교체 후
-`validate-guide --skip-links` 실행.
+**Q. Why does `content = 'DATA'` return zero rows?**  
+A. On CDP Spark 3.5 / Iceberg, `.files.content` is often numeric. Filter with **`content = 0`** for DATA files.
+
+**Q. Updated the HTML guide?**  
+A. Replace `guide/SBI_Iceberg_Compaction_Maintenance_Guide_reviewed.html`, then run `validate-guide --skip-links`.
 
 ---
 
-## 14. 라이선스
+## 14. License
 
-Cloudera Professional Services — SBI CDP engagement 내부 도구.
+Cloudera Professional Services — internal tooling for the SBI CDP engagement.
