@@ -6,7 +6,7 @@ import pytest
 
 from guide_validator.validator import validate_guide
 
-GUIDE = Path(__file__).resolve().parents[1] / "guide" / "SBI_Iceberg_Compaction_Maintenance_Guide_final_EN.html"
+GUIDE = Path(__file__).resolve().parents[1] / "guide" / "index.html"
 
 
 def test_static_guide_validation_passes_without_links():
