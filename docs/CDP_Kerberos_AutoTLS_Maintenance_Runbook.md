@@ -2,7 +2,7 @@
 
 **대상 환경:** CDP Private Cloud Base 7.3.1.600+ · Spark 3.5.4 · Iceberg 1.5.2 · Kerberos · Auto-TLS  
 **Kerberos Principal (예시):** `systest@QE-INFRA-AD.CLOUDERA.COM`  
-**기준 문서:** [SBI Iceberg Compaction & Maintenance Operational Guide](../guide/index.html)
+**기준 문서:** [SBI Iceberg Compaction & Maintenance Operational Guide](../guide/SBI_Iceberg_Compaction_Maintenance_Guide_final_EN.html)
 
 ---
 

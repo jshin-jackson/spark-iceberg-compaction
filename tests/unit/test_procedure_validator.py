@@ -6,7 +6,7 @@ from guide_validator.html_parser import parse_guide
 from guide_validator.procedure_validator import validate_procedures
 from guide_validator.sql_extractor import extract_all_from_blocks
 
-GUIDE = Path(__file__).resolve().parents[2] / "guide" / "index.html"
+GUIDE = Path(__file__).resolve().parents[2] / "guide" / "SBI_Iceberg_Compaction_Maintenance_Guide_final_EN.html"
 
 
 def test_guide_procedures_pass_validation():

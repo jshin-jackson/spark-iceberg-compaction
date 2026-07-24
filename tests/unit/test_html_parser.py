@@ -4,7 +4,7 @@ from pathlib import Path
 
 from guide_validator.html_parser import parse_guide
 
-GUIDE = Path(__file__).resolve().parents[2] / "guide" / "index.html"
+GUIDE = Path(__file__).resolve().parents[2] / "guide" / "SBI_Iceberg_Compaction_Maintenance_Guide_final_EN.html"
 
 
 def test_parse_guide_extracts_title_and_sections():

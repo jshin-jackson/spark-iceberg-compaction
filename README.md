@@ -718,7 +718,7 @@ A. Avoids fragile quoting of date literals in CDP `CALL` statements.
 A. On CDP Spark 3.5 / Iceberg, `.files.content` is often numeric. Filter with **`content = 0`** for DATA files.
 
 **Q. Updated the HTML guide?**  
-A. Replace `guide/index.html`, then run `validate-guide --skip-links`.
+A. Replace `guide/SBI_Iceberg_Compaction_Maintenance_Guide_final_EN.html`, then run `validate-guide --skip-links`.
 
 ---
 
