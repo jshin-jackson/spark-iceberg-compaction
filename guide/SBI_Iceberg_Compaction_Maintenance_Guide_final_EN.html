@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SBI Iceberg Compaction &amp; Maintenance Operational Guide</title>
+  <style>
+    :root{--navy:#092f4a;--blue:#164b78;--orange:#f47920;--ink:#19232d;--line:#d5dce2;--pale:#f5f8fa;--red:#a72e2e}
+    *{box-sizing:border-box} body{margin:0;color:var(--ink);font:15px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+    header{padding:38px max(24px,calc((100vw - 1100px)/2));color:#fff;background:linear-gradient(115deg,var(--navy),var(--blue));border-bottom:5px solid var(--orange)}
+    h1{margin:8px 0 12px;font-size:31px;line-height:1.25} main{max-width:1100px;margin:auto;padding:32px 26px 60px}
+    h2{margin:38px 0 15px;padding-bottom:7px;color:var(--blue);font-size:22px;border-bottom:2px solid #dce7ef}
+    .tag,.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:700;font-size:11px}.tag{background:var(--orange)}.meta{display:flex;flex-wrap:wrap;gap:7px 22px;color:#d9e5ed;font-size:13px}
+    .lead{font-size:17px;color:#344553}.box{margin:18px 0;padding:16px 18px;background:var(--pale);border-left:5px solid var(--blue)}.warning{background:#fff8ee;border-left-color:var(--orange)}.critical{background:#fff2f2;border-left-color:var(--red)}
+    .ok{background:#e9f6ee;color:#176b4d}.high{background:#fbe8e8;color:var(--red)}.med{background:#fff2d9;color:#9c5a00}
+    table{width:100%;margin:13px 0 20px;border-collapse:collapse;font-size:14px}th{text-align:left;color:#fff;background:var(--blue)}th,td{padding:10px 11px;vertical-align:top;border:1px solid var(--line)}tr:nth-child(even) td{background:#fafcfd}
+    pre{overflow-x:auto;padding:15px;color:#e9f1f5;background:#17232d;border-radius:5px;font:12.5px/1.52 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}code{padding:1px 4px;background:#edf2f5;border-radius:3px;font:0.91em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}pre code{padding:0;background:transparent}
+    ul,ol{padding-left:23px}.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 0}.step{padding:7px 10px;color:var(--navy);background:#eaf2f7;border-radius:4px;font-weight:650;font-size:13px}.arrow{color:var(--orange);font-weight:700}
+    footer{margin-top:45px;padding-top:16px;color:#53616d;border-top:1px solid var(--line);font-size:12px}@media print{body{font-size:12px}main{max-width:none;padding:18px}header{padding:22px}table,pre,.box{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<header>
+  <span class="tag">CLOUDERA PROFESSIONAL SERVICES</span>
+  <h1>Iceberg Compaction &amp; Maintenance Operational Guide</h1>
+  <div class="meta"><span>Customer: State Bank of India (SBI)</span><span>CDP Private Cloud Base 7.3.1.600+</span><span>Spark 3.5.4 · Iceberg 1.5.2 · HDFS / Ozone</span></div>
+</header>
+<main>
+  <p class="lead">This is the operational guide for maintaining data files, delete files, snapshots, metadata, and orphan files on SBI's PROD Iceberg tables. It has been reviewed and revised against the Iceberg 1.5.2 Spark Procedures reference and known CDP operational risks.</p>
+
+  <div class="box critical"><strong>Must-verify before approval (P0)</strong><br>Every <code>CALL</code> statement in this guide requires Spark 3's Iceberg SQL extension and a correctly configured Iceberg catalog — without these two, every procedure fails, regardless of authorization setup. Before production rollout, use a maintenance-only Spark job to confirm the extension/catalog setup and read/write/delete access to the underlying HDFS/Ozone paths. If your deployment enforces authorization through Ranger, also confirm the required Ranger policies are in place; Ranger itself is not a prerequisite for these procedures on deployments that don't route through it.</div>
+
+  <h2>1. Scope and Common Operating Principles</h2>
+  <ul>
+    <li>Each maintenance run is scoped to <strong>one table at a time</strong>. Never overlap it with ETL, <code>MERGE</code>, <code>DELETE</code>, <code>UPDATE</code>, or streaming commits on the same table.</li>
+    <li>Downtime is normally not required, but maintenance generates heavy read/shuffle/write activity and Iceberg commits. Use a dedicated queue and cap executors, memory, and concurrent runs.</li>
+    <li>Before and after each run, record the table's file/snapshot/manifest counts, Spark execution time, scan task skew, and query planning time.</li>
+    <li>Replace the example <code>spark_catalog</code> and <code>databases.table</code> with your actual catalog name and fully-qualified table name.</li>
+    <li>For <code>rewrite_data_files</code>, scope each run to partitions whose ingestion and read activity has already finished, using a <code>where</code> predicate (e.g. a date or partition-key filter) instead of rewriting the whole table.</li>
+    <li><code>rewrite_position_delete_files</code>, <code>rewrite_manifests</code>, <code>expire_snapshots</code>, and <code>remove_orphan_files</code> operate at table scope in Iceberg 1.5.2, not partition scope — <code>rewrite_data_files</code> is the only procedure in this guide with a documented <code>where</code> predicate. Treat these four as a table-level maintenance window rather than something you can lock to a single partition.</li>
+  </ul>
+  <div class="box"><strong>Execution environment scope:</strong> This guide is written against Spark on YARN. OpenShift is not a prerequisite for the Iceberg procedure syntax or for the HDFS/Ozone file lifecycle described here. If maintenance Spark jobs instead run through CDE or Kubernetes executors, translate every reference to "YARN queue / executor / memory cap" in this document into that platform's equivalent controls — virtual cluster quota, pod CPU/memory limits, and concurrent job caps. Do not mix the resource-control model of the two execution paths within the same job.</div>
+
+  <h2>2. Recommended Execution Order</h2>
+  <div class="flow"><span class="step">Pre-checks &amp; table lock</span><span class="arrow">→</span><span class="step">rewrite_data_files</span><span class="arrow">→</span><span class="step">rewrite_position_delete_files (conditional)</span><span class="arrow">→</span><span class="step">rewrite_manifests (conditional)</span><span class="arrow">→</span><span class="step">expire_snapshots</span></div>
+  <div class="box warning"><strong>Orphan file cleanup is not forced into this chain.</strong> Run it as a separate weekly job only after a failed write or during a scheduled review, and always require a <code>dry_run</code> review and sign-off before deleting anything.</div>
+
+  <h2>3. Data File Compaction: <code>rewrite_data_files</code></h2>
+  <p><span class="badge ok">Applicable</span> 512 MB is a workload-specific starting point for benchmarking, not a fixed officially recommended value — validate it against the table's actual query and write pattern on both HDFS and Ozone. A target file size is not the same concept as an HDFS block size, and neither 128 MB nor Ozone's 5 GB should be treated as a fixed standard.</p>
+  <pre><code>CALL spark_catalog.system.rewrite_data_files(
+  table =&gt; 'databases.table',
+  where =&gt; 'partition_col = ''2026-07-20''',
+  strategy =&gt; 'binpack',
+  options =&gt; map(
+    'target-file-size-bytes', '536870912',
+    'min-input-files', '5',
+    'max-concurrent-file-group-rewrites', '2',
+    'max-file-group-size-bytes', '21474836480',
+    'partial-progress.enabled', 'false'
+  )
+);</code></pre>
+  <ul>
+    <li>The <code>where</code> predicate scopes the run to partitions whose ingestion and read window has already closed. This is the only one of the five procedures in this guide that accepts partition-level filtering — replace <code>partition_col</code> and the example value with your table's real partition key.</li>
+    <li><code>min-input-files=5</code> is one of several criteria used to decide which file groups get rewritten — it does not mean file groups with fewer than 5 files are always excluded.</li>
+    <li>The default for <code>partial-progress.enabled</code> is <code>false</code>. Setting it to <code>true</code> splits one job into multiple commits/snapshots, so only enable it when you're willing to accept more snapshots and a higher chance of colliding with concurrent writes. It is not a "required setting for large tables."</li>
+    <li>512 MB is a target, not a guarantee. Actual file sizes may come out smaller or larger depending on partition boundaries, Spark task size, and compression ratio.</li>
+  </ul>
+  <pre><code>ALTER TABLE databases.table SET TBLPROPERTIES (
+  'write.target-file-size-bytes' = '536870912'
+);</code></pre>
+  <p>Compaction options alone do not stop future writes from creating small files again. Set the write-side property above as well, and separately benchmark your Spark write-partitioning and AQE settings.</p>
+
+  <h2>4. Position Delete Cleanup: <code>rewrite_position_delete_files</code></h2>
+  <p><span class="badge med">Conditional</span> This procedure rewrites position delete files (not equality deletes). It has two distinct uses: ordinary compaction of small position delete files, and removal of dangling deletes after <code>rewrite_data_files</code>.</p>
+  <p>For TSB 2024-752 mitigation, run it immediately after <code>rewrite_data_files</code> in the same maintenance window when the table is format v2, position delete files exist, and a downstream plain <code>SELECT count(*)</code> can be answered by Impala from statistics. This risk applies when the relevant delete files are fully dangling — they only reference data files removed by the preceding <code>rewrite_data_files</code>.</p>
+  <pre><code>-- TSB 2024-752 mitigation: rewrite every position delete file
+CALL spark_catalog.system.rewrite_position_delete_files(
+  table =&gt; 'databases.table',
+  options =&gt; map(
+    'rewrite-all', 'true',
+    'max-concurrent-file-group-rewrites', '2',
+    'max-file-group-size-bytes', '21474836480'
+  )
+);</code></pre>
+  <p>For ordinary position-delete compaction where complete dangling-delete removal is not required, use size-based selection instead:</p>
+  <pre><code>CALL spark_catalog.system.rewrite_position_delete_files(
+  table =&gt; 'databases.table',
+  options =&gt; map(
+    'min-input-files', '2',
+    'max-concurrent-file-group-rewrites', '2',
+    'max-file-group-size-bytes', '21474836480'
+  )
+);</code></pre>
+  <div class="box warning"><strong>Note:</strong> This procedure operates at table scope and has no documented <code>where</code> predicate — unlike <code>rewrite_data_files</code>, you cannot restrict it to specific partitions. Do not run the full <code>rewrite-all</code> TSB mitigation unconditionally on every table Impala queries; it increases scan and rewrite cost.</div>
+
+  <h2>5. Manifest Rewrite: <code>rewrite_manifests</code></h2>
+  <p><span class="badge med">Conditional</span> This procedure does not delete old metadata JSON files. It rewrites and clusters manifest entries by partition fields to optimize scan planning, so use it only on tables with frequent partition filtering and a large number of manifests.</p>
+  <pre><code>CALL spark_catalog.system.rewrite_manifests(
+  table =&gt; 'databases.table',
+  use_caching =&gt; false
+);</code></pre>
+  <p>Start large manifest jobs with <code>use_caching=false</code> to avoid executor memory pressure. If planning time doesn't improve before and after the run, drop the table from your regular schedule. This runs at table scope: in Iceberg 1.5.2, <code>spec_id</code> can select a partition specification, but it cannot filter to a specific partition value. Treat it as a table-level task, not a per-partition one.</p>
+
+  <h2>6. Snapshot Expiry: <code>expire_snapshots</code></h2>
+  <p><span class="badge high">Requires a retention policy</span> The 30-day / 20-snapshot values below are only a starting example — set the real numbers based on your time-travel, audit, incident-analysis, and rollback requirements.</p>
+  <pre><code>CALL spark_catalog.system.expire_snapshots(
+  table =&gt; 'databases.table',
+  older_than =&gt; TIMESTAMPADD(DAY, -30, CURRENT_TIMESTAMP),
+  retain_last =&gt; 20,
+  max_concurrent_deletes =&gt; 4
+);</code></pre>
+  <p>This job never deletes files referenced by a live snapshot, but once a snapshot expires you can no longer time-travel or roll back to it. Tune <code>max_concurrent_deletes</code> based on the load it places on HDFS/Ozone and the NameNode/OM. Snapshot history is inherently table/branch-scoped — there is no partition-level equivalent, so this runs against the whole table every time.</p>
+
+  <h2>7. Metadata JSON Retention</h2>
+  <p><code>expire_snapshots</code> alone does not fully manage the lifecycle of old metadata JSON files. Only <code>write.metadata.delete-after-commit.enabled=true</code> is strictly required to start automatic deletion — with it enabled, old metadata files beyond the default retention count (100) are already deleted after each commit even if you never touch the second property below.</p>
+  <pre><code>ALTER TABLE databases.table SET TBLPROPERTIES (
+  'write.metadata.delete-after-commit.enabled' = 'true',
+  'write.metadata.previous-versions-max' = '100'
+);</code></pre>
+  <div class="box warning"><strong>Watch your retention count:</strong> <code>write.metadata.previous-versions-max</code> is not mandatory on its own, but setting it explicitly is recommended so you control the retention count instead of relying on the default. For a streaming table, 100 commits can pass in a very short time — decide the metadata JSON retention count per table based on commit frequency and how far back you need to be able to investigate an incident.</div>
+
+  <h2>8. Orphan File Cleanup: <code>remove_orphan_files</code></h2>
+  <p><span class="badge high">Weekly, approval-gated task</span> This handles physical files left behind by failed Spark jobs, YARN container kills (or pod evictions / OOMKilled events if running on CDE or Kubernetes executors), or network failures that were never referenced by the table metadata. Listing the entire table location can put significant load on HDFS/Ozone if the table is large.</p>
+  <pre><code>-- Step 1: review delete candidates
+CALL spark_catalog.system.remove_orphan_files(
+  table =&gt; 'databases.table',
+  older_than =&gt; TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP),
+  dry_run =&gt; true
+);
+
+-- Step 2: after review and approval, delete for real
+CALL spark_catalog.system.remove_orphan_files(
+  table =&gt; 'databases.table',
+  older_than =&gt; TIMESTAMPADD(DAY, -7, CURRENT_TIMESTAMP)
+);</code></pre>
+  <p>The retention window must be longer than the longest-running write you expect. 7 days is a conservative starting point — set the real value based on your actual longest write/retry duration. This scan walks the entire table location; there is no partition-level equivalent, so treat it as a table-level task like the three procedures above.</p>
+
+  <h2>9. File Size and Scheduling Standards</h2>
+  <table><tr><th>Item</th><th>Operating Standard</th></tr>
+    <tr><td>HDFS / Ozone target file size</td><td>Start at 512 MB. Benchmark 256 MB–1 GB per table to finalize a value. Do not use Ozone 5 GB as a default.</td></tr>
+    <tr><td>Compaction frequency</td><td>Once daily, scoped with a <code>where</code> predicate to partitions that have finished ingestion and are not being actively read. Do not make a full-table rewrite the default recurring job.</td></tr>
+    <tr><td>Position delete cleanup</td><td>Run in the same window only for tables meeting the format v2 + position delete + data-file rewrite conditions. Table scope only — no partition-level filter is available.</td></tr>
+    <tr><td>Snapshot expiry</td><td>Can run daily. Table/branch scope only. Explicitly document the business retention period and minimum snapshot count.</td></tr>
+    <tr><td>Orphan cleanup</td><td>Weekly, or after a failure event. Table scope only. Requires dry-run review and approval before actual deletion.</td></tr>
+    <tr><td>Orchestration</td><td>Manage table locking, run order, retries, logging, and alerting with Airflow, Oozie, or your organization's standard scheduler. A specific container platform is not a prerequisite of this document.</td></tr>
+  </table>
+
+  <h2>10. Deployment Approval Checklist</h2>
+  <ol><li>Verified the Iceberg SQL extension and catalog from a maintenance Spark job beforehand, plus storage permissions and, where Ranger is enabled, the required Ranger policies.</li><li>Checked the target table's format version, delete-file type, and the scale of its snapshots/files/manifests.</li><li>Implemented per-table locking and a schedule that never overlaps with ETL/streaming; for <code>rewrite_data_files</code>, confirmed the target partitions have finished ingestion and are not being actively read before the run.</li><li>Set executor, memory, and concurrent-run caps on a dedicated resource pool — a YARN queue, or the equivalent CDE virtual cluster / Kubernetes namespace quota if maintenance runs on CDE or Kubernetes executors.</li><li>Ran the first execution on a representative table and measured file count, scan performance, planning time, skew, and commit failure rate.</li><li>Orphan cleanup only runs after the dry-run results are reviewed and explicitly approved.</li></ol>
+
+  <h2>11. Official Documentation References</h2>
+  <p>The sources below are the official basis for this guide's version assumptions, procedure syntax, Spark execution settings, and Ozone-related judgments. Before applying this in production, cross-check the installed parcel/build version against the corresponding document version. Per Cloudera's component-version release notes, Spark 3.5.4 / Iceberg 1.5.2 was introduced in Cloudera Runtime 7.3.1.500 and has been retained through at least 7.3.1.706, so the version baseline in this guide holds across that range — confirm your exact build against the linked component-version pages.</p>
+  <table>
+    <tr><th>Area</th><th>Official Document</th><th>Used For</th></tr>
+    <tr><td>Cloudera Runtime</td><td><a href="https://docs.cloudera.com/runtime/7.3.1/public-release-notes/topics/rt-runtime-component-versions_731600.html">Cloudera Runtime 7.3.1.600 SP3 CHF 1 - Component Versions</a></td><td>Confirming the Spark 3.5.4 / Iceberg 1.5.2 version baseline</td></tr>
+    <tr><td>Cloudera Runtime</td><td><a href="https://docs.cloudera.com/runtime/7.3.1/public-release-notes/topics/rt-runtime-component-versions_731706.html">Cloudera Runtime 7.3.1.706 - Component Versions</a></td><td>Confirming Spark 3.5.4 / Iceberg 1.5.2 is retained on later 7.3.1.x builds</td></tr>
+    <tr><td>Cloudera + Iceberg</td><td><a href="https://docs.cloudera.com/cdp-private-cloud-base/7.3.1/spark-iceberg/spark-iceberg.pdf">Using Apache Iceberg with Spark</a></td><td>Prerequisites for Spark catalog, Ranger policies, and Iceberg usage on CDP Private Cloud Base</td></tr>
+    <tr><td>Cloudera + Ozone</td><td><a href="https://docs.cloudera.com/cdp-private-cloud-base/7.3.1/impala-reference/topics/impala-ozone.html">Impala with Ozone</a></td><td>Confirming the Ozone filesystem protocol and its global block-size behavior</td></tr>
+    <tr><td>Cloudera + Ozone</td><td><a href="https://docs.cloudera.com/storage/latest/ozone-performance-tuning/topics/ozone-performance-tuning-for-ozone.html">Performance tuning for Ozone</a></td><td>Reference for OM/S3 Gateway resource sizing and Ozone performance monitoring/tuning</td></tr>
+    <tr><td>Apache Spark 3.5.4</td><td><a href="https://spark.apache.org/docs/3.5.4/sql-performance-tuning.html#adaptive-query-execution">Spark SQL Performance Tuning - Adaptive Query Execution</a></td><td>Benchmarking write partitioning, shuffle, and AQE settings to prevent small files</td></tr>
+    <tr><td>Apache Spark 3.5.4</td><td><a href="https://spark.apache.org/docs/3.5.4/configuration.html">Spark Configuration</a></td><td>Executor/memory, dynamic allocation, shuffle, and submission settings</td></tr>
+    <tr><td>Apache Iceberg 1.5.2</td><td><a href="https://iceberg.apache.org/docs/1.5.2/spark-procedures/">Spark Procedures</a></td><td>Syntax, options, and constraints for <code>rewrite_data_files</code>, <code>rewrite_position_delete_files</code>, <code>rewrite_manifests</code>, <code>expire_snapshots</code>, and <code>remove_orphan_files</code></td></tr>
+    <tr><td>Apache Iceberg 1.5.2</td><td><a href="https://iceberg.apache.org/docs/1.5.2/spark-configuration/">Spark Configuration</a></td><td>Priority of <code>spark.sql.extensions</code>, catalog settings, and table properties</td></tr>
+    <tr><td>Apache Iceberg 1.5.2</td><td><a href="https://iceberg.apache.org/docs/1.5.2/maintenance/">Maintenance</a></td><td>Lifecycle and safety considerations for snapshot expiry, metadata JSON retention, and orphan file cleanup</td></tr>
+  </table>
+  <footer>Cloudera Professional Services · SBI CDP Implementation Engagement<br>Reviewed baseline: CDP Private Cloud Base 7.3.1.600+ · Spark 3.5.4 · Iceberg 1.5.2</footer>
+</main>
+</body>
+</html>

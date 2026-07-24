@@ -11,7 +11,7 @@ from guide_validator.validator import validate_guide
 DEFAULT_GUIDE = (
     Path(__file__).resolve().parents[2]
     / "guide"
-    / "SBI_Iceberg_Compaction_Maintenance_Guide_reviewed.html"
+    / "SBI_Iceberg_Compaction_Maintenance_Guide_final_EN.html"
 )
 
 
